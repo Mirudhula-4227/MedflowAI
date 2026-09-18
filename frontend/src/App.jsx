@@ -473,8 +473,10 @@ function Results({ features, result, onExplore, onRestart, error, user, historyC
             className="btn ghost"
             onClick={() => downloadPredictionSummary({
               user,
-              heart: { riskPercent: pct(ex.heart.risk), tier: ex.heart.tier.label, drivers: ex.heart.drivers },
-              stroke: { riskPercent: pct(ex.stroke.risk), tier: ex.stroke.tier.label, drivers: ex.stroke.drivers },
+              features,
+              result,
+              heart: { risk: ex.heart.risk, riskPercent: pct(ex.heart.risk), tier: ex.heart.tier.label, color: ex.heart.tier.color, drivers: ex.heart.drivers },
+              stroke: { risk: ex.stroke.risk, riskPercent: pct(ex.stroke.risk), tier: ex.stroke.tier.label, color: ex.stroke.tier.color, drivers: ex.stroke.drivers },
               steps,
             })}
           >
