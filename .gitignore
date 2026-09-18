@@ -1,20 +1,94 @@
-# Python
+# ==============================================================================
+# MedFlowAI — Git Ignore Rules
+# Covers: C++ engine, Python ML pipelines, Node.js/Vite frontend, OS & IDE artifacts
+# ==============================================================================
+
+# Node.js & Frontend Dependencies
+node_modules/
+*/node_modules/
+.pnp
+.pnp.js
+.npm/
+.eslintcache
+
+# Build Outputs & Bundler Caches
+dist/
+*/dist/
+build/
+*/build/
+out/
+.vite/
+*/.vite/
+
+# Python & ML Artifacts
 __pycache__/
 *.py[cod]
+*$py.class
 *.pyo
-.env
+*.pyd
+.Python
+env/
 venv/
 .venv/
+ENV/
+env.bak/
+venv.bak/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Data (large CSVs — don't commit raw data to git)
-*.csv
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Binaries
+# C / C++ Binaries, Intermediate Objects & Debug Symbols
 *.exe
+*.out
+*.app
 *.o
 *.obj
+*.dll
+*.dylib
+*.so
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
 
+# Datasets & Large Data Files (Keep repo lightweight)
+*.csv
+*.parquet
+*.feather
+*.h5
+*.pkl
+*.pickle
+
+# Environment Variables, Secrets & Local Overrides
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+
+# IDEs, Editors & OS Files
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosv
+*.sln.docstates
+*.swp
+*~
+*.bak
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Logs & Diagnostic Dumps
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
