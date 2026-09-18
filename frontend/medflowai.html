@@ -864,8 +864,21 @@ function encodeFeatures(a = {}) {
   return features;
 }
 
+/* Fields that must never be 0 — a defaulted 0 here means the
+   user skipped the question and the model will silently score garbage.
+   All are continuous measurements that cannot legitimately be zero. */
+const REQUIRED_NONZERO = [
+  'age',               // nobody is 0 years old
+  'trestbps',          // resting BP of 0 is impossible alive
+  'chol',              // cholesterol of 0 is impossible alive
+  'thalach',           // peak heart rate of 0 is impossible alive
+  'avg_glucose_level', // glucose of 0 is impossible alive
+  'bmi',               // BMI of 0 is impossible
+];
+
 /* Dev guard — throws loudly on the failure modes the backend can't
-   recover from: strings, booleans, NaN, or a broken one-hot group. */
+   recover from: strings, booleans, NaN, a broken one-hot group,
+   or a critical numeric field that was never answered (defaults to 0). */
 function assertValidFeatures(f) {
   const bad = [];
   for (const [k, v] of Object.entries(f)) {
@@ -878,6 +891,10 @@ function assertValidFeatures(f) {
   }
   for (const k of ALL_ONE_HOT) {
     if (f[k] !== 0 && f[k] !== 1) bad.push(`${k} must be 0 or 1`);
+  }
+  // Guard: critical continuous fields must not be zero (unanswered question default)
+  for (const k of REQUIRED_NONZERO) {
+    if (f[k] === 0) bad.push(`${k} is 0 — question may not have been answered`);
   }
   if (bad.length) throw new Error('Invalid feature payload: ' + bad.join(' | '));
   return f;
@@ -1881,12 +1898,29 @@ function Counterfactual({ features, baseline, onBack }) {
   const [cf, setCf] = useState(null);
   const [busy, setBusy] = useState(false);
 
+  // Fire immediately when the screen loads or the lever changes so
+  // "Your answer" is populated before the user drags anything.
   useEffect(() => {
-    setValue(Number(features[lever.field]) || lever.min);
+    let cancelled = false;
+    setBusy(true);
     setCf(null);
-  }, [lever, features]);
+    const initialVal = Number(features[lever.field]) || lever.min;
+    setValue(initialVal);
+    counterfactual({
+      features,
+      model: lever.model,
+      flip_field: lever.field,
+      flip_value: initialVal,
+    }).then((res) => {
+      if (!cancelled) { setCf(res); setBusy(false); }
+    });
+    return () => { cancelled = true; };
+  }, [lever, features]); // only re-run when lever/features change, NOT on every value change
 
+  // Debounced call when the user actually drags the slider
   useEffect(() => {
+    const startVal = Number(features[lever.field]) || lever.min;
+    if (Math.abs(value - startVal) < 1e-9) return; // skip the init value
     let cancelled = false;
     setBusy(true);
     const t = setTimeout(async () => {
@@ -1896,19 +1930,13 @@ function Counterfactual({ features, baseline, onBack }) {
         flip_field: lever.field,
         flip_value: value,
       });
-      if (!cancelled) {
-        setCf(res);
-        setBusy(false);
-      }
+      if (!cancelled) { setCf(res); setBusy(false); }
     }, 220);
-    return () => {
-      cancelled = true;
-      clearTimeout(t);
-    };
-  }, [value, lever, features]);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const original = cf ? cf.original_risk : baseline[lever.model === 'heart' ? 'heart_risk' : 'stroke_risk'];
-  const updated = cf ? cf.new_risk : original;
+  const updated  = cf ? cf.new_risk      : original;
   const delta = updated - original;
   const startValue = Number(features[lever.field]);
   const moved = Math.abs(value - startValue) > 1e-9;

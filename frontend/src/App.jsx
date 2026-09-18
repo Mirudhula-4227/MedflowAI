@@ -459,20 +459,42 @@ function Counterfactual({ features, baseline, onBack }) {
   const [cf, setCf] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    setValue(Number(features[lever.field]) || lever.min);
-    setCf(null);
-  }, [lever, features]);
-
+  // Fire immediately when the screen loads or the lever changes so
+  // "Your answer" is populated before the user drags anything.
   useEffect(() => {
     let cancelled = false;
     setBusy(true);
+    setCf(null);
+    const initialVal = Number(features[lever.field]) || lever.min;
+    setValue(initialVal);
+    counterfactual({
+      features,
+      model: lever.model,
+      flip_field: lever.field,
+      flip_value: initialVal,
+    }).then((res) => {
+      if (!cancelled) { setCf(res); setBusy(false); }
+    });
+    return () => { cancelled = true; };
+  }, [lever, features]);
+
+  // Debounced call when the user actually drags the slider
+  useEffect(() => {
+    const startVal = Number(features[lever.field]) || lever.min;
+    if (Math.abs(value - startVal) < 1e-9) return;
+    let cancelled = false;
+    setBusy(true);
     const t = setTimeout(async () => {
-      const res = await counterfactual({ features, model: lever.model, flip_field: lever.field, flip_value: value });
+      const res = await counterfactual({
+        features,
+        model: lever.model,
+        flip_field: lever.field,
+        flip_value: value,
+      });
       if (!cancelled) { setCf(res); setBusy(false); }
     }, 220);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [value, lever, features]);
+  }, [value]);
 
   const original = cf ? cf.original_risk : baseline[lever.model === 'heart' ? 'heart_risk' : 'stroke_risk'];
   const updated  = cf ? cf.new_risk : original;

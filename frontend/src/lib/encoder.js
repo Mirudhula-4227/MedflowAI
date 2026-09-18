@@ -93,8 +93,21 @@ export function encodeFeatures(a = {}) {
   return features;
 }
 
+/* Fields that must never be 0 — a defaulted 0 here means the
+   user skipped the question and the model will silently score garbage.
+   All are continuous measurements that cannot legitimately be zero. */
+const REQUIRED_NONZERO = [
+  'age',               // nobody is 0 years old
+  'trestbps',          // resting BP of 0 is impossible alive
+  'chol',              // cholesterol of 0 is impossible alive
+  'thalach',           // peak heart rate of 0 is impossible alive
+  'avg_glucose_level', // glucose of 0 is impossible alive
+  'bmi',               // BMI of 0 is impossible
+];
+
 /* Dev guard — throws loudly on the failure modes the backend can't
-   recover from: strings, booleans, NaN, or a broken one-hot group. */
+   recover from: strings, booleans, NaN, a broken one-hot group,
+   or a critical numeric field that was never answered (defaults to 0). */
 export function assertValidFeatures(f) {
   const bad = [];
   for (const [k, v] of Object.entries(f)) {
@@ -107,6 +120,10 @@ export function assertValidFeatures(f) {
   }
   for (const k of ALL_ONE_HOT) {
     if (f[k] !== 0 && f[k] !== 1) bad.push(`${k} must be 0 or 1`);
+  }
+  // Guard: critical continuous fields must not be zero (unanswered question default)
+  for (const k of REQUIRED_NONZERO) {
+    if (f[k] === 0) bad.push(`${k} is 0 — question may not have been answered`);
   }
   if (bad.length) throw new Error('Invalid feature payload: ' + bad.join(' | '));
   return f;

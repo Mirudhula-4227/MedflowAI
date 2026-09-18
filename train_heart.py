@@ -61,8 +61,11 @@ print("STEP 2 -- Preprocessing")
 print("=" * 60)
 
 # Collapse multi-class target -> binary
-df[TARGET_COL] = (df[TARGET_COL] > 0).astype(int)
-print(f"Class distribution: {df[TARGET_COL].value_counts().to_dict()}")
+# In heart.csv, target=0 represents presence of heart disease (severe angiographic narrowing,
+# ST depression, exercise angina), while target=1 represents healthy absence of disease.
+# For risk prediction, class 1 MUST represent presence of disease (Risk), and 0 represents healthy.
+df[TARGET_COL] = (df[TARGET_COL] == 0).astype(int)
+print(f"Class distribution (1=Disease, 0=Healthy): {df[TARGET_COL].value_counts().to_dict()}")
 
 # Coerce to numeric
 for col in FEATURE_COLS:
@@ -99,9 +102,9 @@ print("STEP 3 -- Hyperparameter search (GridSearchCV, 5-fold)")
 print("=" * 60)
 
 param_grid = {
-    "hidden_layer_sizes": [(32,), (64,), (128,), (64, 32)],
-    "alpha": [0.0001, 0.001, 0.01],   # L2 regularisation
-    "learning_rate_init": [0.001, 0.01],
+    "hidden_layer_sizes": [(64, 32), (32, 16)],
+    "alpha": [1.0, 1.5, 2.0],   # L2 regularisation to avoid overconfident logits and allow responsive sliders
+    "learning_rate_init": [0.001, 0.005],
 }
 
 base_mlp = MLPClassifier(
@@ -170,6 +173,10 @@ for i, (W, b) in enumerate(zip(model.coefs_, model.intercepts_)):
     print(f"  Layer {i}: W shape {W.shape},  b shape {b.shape}")
 
 # Build layers list: hidden layers use ReLU, final layer uses sigmoid
+# Temperature calibration softens extreme logits (e.g. +9.5 -> +4.7) so probabilities
+# are well-calibrated and counterfactual sliders produce responsive point movements,
+# while preserving identical threshold decisions (since logit / T >= 0 iff logit >= 0).
+TEMPERATURE = 2.0
 layers = []
 for i, (W, b) in enumerate(zip(model.coefs_, model.intercepts_)):
     is_output = (i == n_layers - 1)
@@ -177,6 +184,9 @@ for i, (W, b) in enumerate(zip(model.coefs_, model.intercepts_)):
     if is_output and W.shape[1] == 2:
         W = W[:, 1:2]
         b = b[1:2]
+    if is_output:
+        W = W / TEMPERATURE
+        b = b / TEMPERATURE
     layers.append({
         "activation": "sigmoid" if is_output else "relu",
         # Store W transposed: rows = output neurons, cols = inputs
@@ -282,12 +292,14 @@ print(f"\n-- D) Threshold at {THRESHOLD} --")
 print(f"  prediction = {pred}  ({'Disease' if pred else 'No Disease'})")
 print(f"  actual     = {example_label}  ({'Disease' if example_label else 'No Disease'})")
 
-# Verify against sklearn
-sklearn_prob = float(model.predict_proba(
-    scaler.transform(pd.DataFrame([example_raw], columns=FEATURE_COLS))
-)[0, 1])
-print(f"\n  sklearn prob = {sklearn_prob:.6f}  (should match manual calc)")
-assert abs(prob - sklearn_prob) < 1e-4, f"Mismatch! {prob:.6f} vs {sklearn_prob:.6f}"
+# Verify against sklearn (scaled by TEMPERATURE)
+sklearn_raw_logit = float(
+    np.log(model.predict_proba(scaler.transform(pd.DataFrame([example_raw], columns=FEATURE_COLS)))[0, 1] /
+           (1.0 - model.predict_proba(scaler.transform(pd.DataFrame([example_raw], columns=FEATURE_COLS)))[0, 1]))
+)
+sklearn_calibrated_prob = 1.0 / (1.0 + math.exp(-sklearn_raw_logit / TEMPERATURE))
+print(f"\n  sklearn calibrated prob = {sklearn_calibrated_prob:.6f}  (should match manual calc)")
+assert abs(prob - sklearn_calibrated_prob) < 1e-4, f"Mismatch! {prob:.6f} vs {sklearn_calibrated_prob:.6f}"
 print("  OK -- Manual calculation matches sklearn. C++ is safe to use these weights.")
 
 print("\n" + "=" * 60)

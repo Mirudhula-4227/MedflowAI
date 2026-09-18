@@ -12,3 +12,9 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Binaries
+*.exe
+*.o
+*.obj
+
