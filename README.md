@@ -1,9 +1,9 @@
 # MedflowAI 🫀🧠
 
 > **High-Performance Clinical Decision Support System**  
-> Real-time cardiovascular & stroke risk prediction with interactive counterfactual "what-if" simulation.
+> Real-time cardiovascular & stroke risk prediction with interactive counterfactual simulation, out-of-distribution (OOD) confidence detection, and longitudinal risk trajectory tracking.
 
-MedflowAI bridges modern deep learning and high-performance native systems. Offline machine learning models (trained in Python with scikit-learn) export neural network weights into flat, transparent JSON specifications. A lightweight **C++ inference engine** loads these models directly into memory to serve sub-millisecond risk evaluations and counterfactual what-if deltas over an HTTP REST API to a rich, patient-centric frontend.
+MedflowAI bridges modern machine learning with ultra-low latency native systems. Machine learning models—trained in Python using **Calibrated Gradient Boosted Decision Trees (GBDT)**—export ensemble decision structures into flat, transparent JSON specifications. A custom **C++ inference engine** loads these models directly into memory to serve microsecond-level risk evaluations, confidence scoring, and counterfactual what-if deltas over an HTTP REST API to a rich, patient-centric web application.
 
 ---
 
@@ -17,8 +17,8 @@ flowchart TB
     end
 
     subgraph OfflineML["🐍 ML Pipeline (Python / scikit-learn)"]
-        T1["train_heart.py\n• Target alignment (1=Disease, 0=Healthy)\n• StandardScaler & SimpleImputer\n• Tuned MLP (13 → 32 → 16 → 1)\n• Temperature calibration (T=2.0)"]
-        T2["train_stroke.py\n• Imbalance handling (19.5:1)\n• Categorical one-hot encoding\n• Tuned MLP (15 → 64 → 32 → 1)"]
+        T1["train_heart.py\n• Target alignment (1=Disease, 0=Healthy)\n• HistGradientBoostingClassifier (100 trees)\n• Platt Scaling calibration (CalibratedClassifierCV)\n• Feature centroid & std dev export for OOD"]
+        T2["train_stroke.py\n• Imbalance handling (19.5:1 weighted loss)\n• Categorical one-hot encoding\n• HistGradientBoostingClassifier (100 trees)\n• Platt Scaling calibration + OOD centroid"]
         J1[/"heart_model.json"/]
         J2[/"stroke_prediction.json"/]
 
@@ -26,24 +26,28 @@ flowchart TB
         D2 --> T2 --> J2
     end
 
-    subgraph NativeBackend["⚙️ C++ Inference Backend (cpp-httplib + nlohmann/json)"]
-        SRV["server.exe / server.cpp\n• Zero Python runtime dependency\n• Startup model deserialization into RAM\n• Vectorized matrix-vector forward pass\n• CORS-enabled REST endpoints"]
-        EP1["POST /predict\nEvaluates heart & stroke risk simultaneously"]
+    subgraph NativeBackend["⚙️ C++ Inference Backend (server.exe / server.cpp)"]
+        SRV["UnifiedModel C++ Engine\n• Zero Python runtime dependency\n• Microsecond decision tree traversal\n• In-stride Mahalanobis centroid OOD check\n• High/Moderate confidence classification\n• Sliding-window rate limiting & sanitization"]
+        EP1["POST /predict\nEvaluates heart & stroke risk + confidence & OOD distances"]
         EP2["POST /counterfactual\nRe-evaluates risk with one flipped factor to calculate live Δ"]
         SRV --> EP1 & EP2
     end
 
-    subgraph WebFrontend["💻 Frontend (React / Babel / Vanilla CSS)"]
-        UI1["Conversational Questionnaire\nOne-question-at-a-time form\nKeyboard shortcuts 1–4, unit validation"]
+    subgraph WebFrontend["💻 Frontend (React / Vite / Vanilla CSS)"]
+        AUTH["User Auth & Session Management\nClient-side authentication with session persistence"]
+        UI1["Conversational Screening\n21 questions, progressive validation,\nkeyboard shortcuts 1–4, unit badges"]
         UI2["Results Dashboard\nDual risk gauges, severity tiers,\nclinical drivers, and next steps"]
-        UI3["Counterfactual Simulator\nInteractive sliders for BP, Cholesterol,\nST depression, Glucose, BMI"]
+        UI3["Counterfactual Simulator\nLive sliders for BP, Cholesterol,\nST depression, Glucose, BMI"]
+        UI4["Assessment History & Trajectory Chart\nZero-server EHR retention (client localStorage)\nInteractive multi-visit SVG trajectory curve\nVisit-over-visit deltas & 1-click simulation"]
+        PDF["PDF Export\nClient-side clinical report generation"]
         
-        UI1 --> UI2 --> UI3
+        AUTH --> UI1 --> UI2 --> UI3
+        UI2 --> UI4 & PDF
     end
 
     J1 & J2 -.->|Loaded at startup| SRV
     UI1 -->|POST answers| EP1
-    EP1 -->|heart_risk, stroke_risk| UI2
+    EP1 -->|heart_risk, stroke_risk, confidence| UI2
     UI3 -->|POST lever change| EP2
     EP2 -->|original_risk, new_risk, delta| UI3
 ```
@@ -55,39 +59,45 @@ flowchart TB
 ### 1. The Machine Learning Engine (`train_heart.py` & `train_stroke.py`)
 - **Heart Disease Model (`train_heart.py`)**:
   - **Dataset**: UCI Cleveland Heart Disease dataset (1,025 records with 13 physiological parameters).
-  - **Label Alignment**: In the raw dataset, `target=0` corresponds to angiographic heart disease and `target=1` corresponds to healthy absence of disease. The pipeline explicitly aligns target orientation:
-    $$\text{target} = (\text{target}_{\text{raw}} == 0) \implies 1 = \text{Disease (Risk)}, 0 = \text{Healthy}$$
-  - **Architecture**: Multi-Layer Perceptron ($13 \rightarrow 32 \rightarrow 16 \rightarrow 1$) with ReLU activation in hidden layers and Sigmoid at the output.
-  - **Temperature Calibration ($T = 2.0$)**: Softens raw logits before the sigmoid:
-    $$P(\text{disease}) = \sigma\left(\frac{z}{T}\right) = \frac{1}{1 + e^{-z / T}}$$
-    This preserves exact 94.6% classification accuracy and decision boundaries while eliminating saturated probabilities ($99.9999\%$ or $0.0001\%$), ensuring counterfactual sliders produce responsive, clinically sensible percentage point shifts.
+  - **Algorithm**: **Calibrated Gradient Boosted Decision Trees (GBDT)** via `HistGradientBoostingClassifier` (100 trees, max depth 5, learning rate 0.08) wrapped in sigmoid Platt Scaling (`CalibratedClassifierCV`).
+  - **Decision Structure**: Trees capture complex non-linear interactions between cardiac markers (e.g., ST depression `oldpeak`, fluoroscopy vessels `ca`, and exercise-induced angina `exang`).
+  - **Performance**: **96.1% test accuracy** ($N=205$), **0.988 ROC-AUC**, with clinically calibrated probabilities.
+  - **OOD Centroid**: Computes the training feature centroid $\mu_i$ and standard deviations $\sigma_i$ to calculate normalized Euclidean / Mahalanobis distance. Outliers ($D > 6.0$) are flagged automatically.
   - **Output**: [`heart_model.json`](heart_model.json).
 
 - **Stroke Prediction Model (`train_stroke.py`)**:
   - **Dataset**: Kaggle Healthcare Stroke dataset (5,110 patients across 15 clinical and demographic features).
-  - **Class Imbalance**: Severe 19.5:1 negative-to-positive ratio addressed using balanced sample weights and tuning for Recall (80% sensitivity on stroke detection).
-  - **Architecture**: Multi-Layer Perceptron ($15 \rightarrow 64 \rightarrow 32 \rightarrow 1$) with ReLU and Sigmoid output.
+  - **Class Imbalance Handling**: Severe 19.5:1 negative-to-positive ratio addressed via balanced sample weighting and threshold tuning, prioritizing **Sensitivity/Recall (80.0%)** for clinical screening safety.
+  - **Algorithm**: Calibrated Gradient Boosted Decision Trees (100 estimators) with Platt Scaling.
+  - **Performance**: **0.825 ROC-AUC**, **80.0% Recall**.
   - **Output**: [`stroke_prediction.json`](stroke_prediction.json).
 
 ---
 
 ### 2. The Native C++ Inference Server (`server.cpp`)
-- **Header-Only Dependencies**: Built using [`cpp-httplib`](httplib.h) for cross-platform HTTP networking and [`nlohmann/json`](json.hpp) for fast JSON parsing.
-- **In-Memory Model Representation**:
+- **Zero Python Dependency**: Compiled to a standalone native binary (`server.exe`) linking against Windows Sockets (`ws2_32`) with zero external runtime dependencies.
+- **Unified Model Architecture**:
+  Supports both tree ensemble traversal and neural network forward passes:
   ```cpp
-  struct Layer {
-      std::vector<std::vector<double>> W; // shape: [out][in]
-      std::vector<double> b;              // shape: [out]
-      std::string activation;             // "relu" or "sigmoid"
+  struct UnifiedModel {
+      std::string model_type; // "gradient_boosted_trees" or "mlp_relu"
+      // GBDT parameters
+      std::vector<double> initial_scores;
+      std::vector<GBDTree> trees;
+      CalibrationParams calibration; // Platt scaling (a * logit + b)
+      // OOD centroid parameters
+      std::vector<double> feature_means;
+      std::vector<double> feature_stds;
+      double ood_threshold;
   };
   ```
-- **Forward Pass (`run_mlp_with_ood`)**:
-  1. **StandardScaler**: $z_i = \frac{x_i - \mu_i}{\sigma_i}$
-  2. **OOD Detection (in-stride)**: $D_{\text{std}} = \sqrt{\sum z_i^2} \implies \text{flag if } D_{\text{std}} > \text{threshold}$
-  3. **Hidden Layer 1**: $h_1 = \text{ReLU}(W_1 z + b_1)$
-  4. **Hidden Layer 2**: $h_2 = \text{ReLU}(W_2 h_1 + b_2)$
-  5. **Output Layer**: $p = \sigma(W_3 h_2 + b_3) = \frac{1}{1 + e^{-\text{logit}}}$
-- **Latency & Throughput**: Sub-millisecond ($< 1\text{ ms}$) evaluation with zero Python runtime dependency, zero disk writes, and sliding-window rate limiting.
+- **Microsecond Tree Traversal**: Each patient feature vector is evaluated through 100 decision trees in $< 50\ \mu\text{s}$, followed by Platt sigmoid calibration:
+  $$P(\text{event}) = \frac{1}{1 + e^{-(a \cdot z + b)}}$$
+- **In-Stride OOD Confidence Check**:
+  $$D_{\text{std}} = \sqrt{\sum_{i=1}^{d} \left(\frac{x_i - \mu_i}{\sigma_i}\right)^2}$$
+  Inputs with $D_{\text{std}} > \text{threshold}$ are automatically assigned `confidence: "MODERATE"` or `"LOW"`, alerting clinicians when patient vitals fall outside training distributions.
+
+---
 
 ### 📊 Validated Model Performance (Held-Out Test Sets)
 
@@ -95,17 +105,46 @@ flowchart TB
 |---|---|---|
 | **Dataset** | UCI Heart Disease (1,025 rows) | Healthcare Stroke Dataset (5,110 rows) |
 | **Features** | 13 physiological vitals | 15 demographic & metabolic metrics |
-| **Architecture** | `13 → 32 → 16 → 1` (MLP, ReLU) | `15 → 64 → 32 → 1` (MLP, ReLU) |
-| **Calibration** | Temperature Scaling ($T=2.0$) | Standard Sigmoid ($T=1.0$) |
-| **Test Accuracy** | **94.6%** ($N=205$) | **70.0%** ($N=1,022$) |
-| **Precision** | **92.4%** | **11.9%** (low-prevalence screening) |
-| **Recall (Sensitivity)** | **97.0%** (catches 97 in 100 cases) | **80.0%** (catches 4 in 5 stroke cases) |
-| **ROC-AUC** | **0.982** | **0.814** |
+| **Algorithm** | **Calibrated GBDT** (100 Trees) | **Calibrated GBDT** (100 Trees) |
+| **Calibration** | Platt Scaling (Sigmoid) | Platt Scaling (Sigmoid) |
+| **Test Accuracy** | **96.1%** ($N=205$) | **71.2%** ($N=1,022$) |
+| **Precision** | **95.8%** | **12.5%** (low-prevalence screening) |
+| **Recall (Sensitivity)** | **96.9%** (catches 97 in 100 cases) | **80.0%** (catches 4 in 5 stroke cases) |
+| **ROC-AUC** | **0.988** | **0.825** |
 | **Export File** | [`heart_model.json`](heart_model.json) | [`stroke_prediction.json`](stroke_prediction.json) |
 
 ---
 
-### 3. API Contract & Endpoints
+### 3. Assessment History & Interactive Risk Trajectory Chart
+- **Zero-Server EHR Retention**: Adhering to strict healthcare data minimization, assessment records are stored exclusively in the client's browser `localStorage` via [`frontend/src/lib/history.js`](frontend/src/lib/history.js). Health vitals and risk scores are never persisted on server disk or database.
+- **Continuous Multi-Visit Trajectory Plot**:
+  - Scalable medical SVG coordinate grid plotting chronological screenings from baseline ($x=0$) to latest ($x=N-1$).
+  - **Dual Risk Curves**: Simultaneous tracking of **Heart Disease Risk** (red) and **Stroke Risk** (purple) over time.
+  - **Risk Zone Stratification**: Color-coded reference bands for Low Risk ($<20\%$), Moderate Risk ($20-40\%$), and High Risk ($>40\%$) with dashed horizontal guidelines.
+  - **Interactive HUD**: Hovering or clicking any node displays visit date, exact percentages, visit-over-visit deltas ($\Delta$), and key vitals (BP, Cholesterol, Glucose, BMI).
+  - **1-Click "Simulate Visit #N"**: Immediately loads any historical screening into the live Counterfactual simulator to model interventions from that baseline.
+  - **Interactive Legend**: Toggle either curve on or off to inspect conditions independently.
+  - **Net Trend Diagnostics**: Computes overall trajectory ($\Delta = \text{Latest} - \text{Baseline}$) with directional color coding.
+
+---
+
+### 4. Counterfactual Simulator ("What if one thing were different?")
+- Direct interactive sensitivity analysis via `/counterfactual` endpoint.
+- Sliders for modifiable levers:
+  - **Heart Levers**: Resting Blood Pressure (`trestbps`), Cholesterol (`chol`), Peak Heart Rate (`thalach`), ST Depression (`oldpeak`).
+  - **Stroke Levers**: Average Blood Glucose (`avg_glucose_level`), Body Mass Index (`bmi`).
+- Instantaneous feedback showing live risk deltas:
+  $$\Delta = \text{Risk}_{\text{modified}} - \text{Risk}_{\text{current}}$$
+
+---
+
+### 5. Client Authentication & PDF Export
+- **User Authentication (`userStorage.js`)**: Supports multi-user sign-in and registration with hashed password handling in local storage.
+- **PDF Clinical Summary (`pdf.js`)**: 1-click generation of formatted clinical summary documents summarizing cardiac and stroke risk tiers, primary clinical drivers, tailored next steps, and patient details.
+
+---
+
+### 6. API Contract & Endpoints
 
 #### `POST /predict`
 Runs inference across both heart and stroke models simultaneously.
@@ -127,13 +166,21 @@ Runs inference across both heart and stroke models simultaneously.
 - **Response**:
   ```json
   {
-    "heart_risk": 0.9910,
-    "stroke_risk": 0.3600
+    "heart_risk": 0.9153,
+    "stroke_risk": 0.0365,
+    "confidence": "HIGH",
+    "heart_ood": false,
+    "heart_ood_distance": 3.501,
+    "stroke_ood": false,
+    "stroke_ood_distance": 2.616,
+    "heart_model_type": "gradient_boosted_trees",
+    "stroke_model_type": "gradient_boosted_trees",
+    "stateless": true
   }
   ```
 
 #### `POST /counterfactual`
-Re-runs a model with a single modified attribute while preserving all other patient values.
+Re-evaluates risk with a single modified attribute while preserving all other patient values.
 - **Request Body**:
   ```json
   {
@@ -146,35 +193,13 @@ Re-runs a model with a single modified attribute while preserving all other pati
 - **Response**:
   ```json
   {
-    "original_risk": 0.9910,
-    "new_risk": 0.9601,
-    "delta": -0.0309
+    "original_risk": 0.9153,
+    "new_risk": 0.7241,
+    "delta": -0.1912,
+    "model_type": "gradient_boosted_trees",
+    "stateless": true
   }
   ```
-
----
-
-### 4. The Interactive User Interface (`frontend/medflowai.html`)
-- **One-Question-at-a-Time Conversational Flow**:
-  - Divided into 3 natural sections: *About You* (demographics), *Heart* (cardiac vitals & tests), and *Stroke* (lifestyle & metabolic markers).
-  - Progressive input controls: number steppers with units (`mm Hg`, `mg/dl`, `bpm`, `mm`) and multi-choice buttons with keyboard shortcuts (`1`–`4`, `Enter`).
-- **Feature Encoder & Safety Guards (`encoder.js`)**:
-  - Automatically translates answers into the 27 flat features expected by the C++ models.
-  - `REQUIRED_NONZERO` guard: Validates that continuous physiological parameters (`age`, `trestbps`, `chol`, `thalach`, `avg_glucose_level`, `bmi`) cannot be submitted as `0` due to skipped questions.
-- **Results Dashboard**:
-  - **Risk Gauges**: Visual percentage meters with dynamic color-coding:
-    - 🟢 **Low Risk** ($< 33\%$)
-    - 🟡 **Moderate Risk** ($33\% - 66\%$)
-    - 🔴 **High Risk** ($> 66\%$)
-  - **Clinical Drivers**: Surfaces the top clinical factors pushing the risk score (e.g. *"3 major vessels showed narrowing on fluoroscopy"*, *"ST depression of 2.8 mm during exertion"*).
-  - **Actionable Next Steps**: Generates tailored clinical recommendations (e.g., lipid panel review, home BP tracking, smoking cessation advice).
-- **Counterfactual Simulator ("What if one thing were different?")**:
-  - Interactive slider controls for modifiable risk levers:
-    - **Heart**: Cholesterol, Resting Blood Pressure, Peak Heart Rate, ST Depression.
-    - **Stroke**: Average Glucose Level, BMI.
-  - Immediate initialization on mount + debounced queries on slider dragging to show live point deltas:
-    $$\Delta = \text{Risk}_{\text{modified}} - \text{Risk}_{\text{current}}$$
-- **Graceful Fallback**: If the C++ server is unreachable, the frontend automatically falls back to an embedded mock evaluation with a topbar indicator.
 
 ---
 
@@ -183,84 +208,69 @@ Re-runs a model with a single modified attribute while preserving all other pati
 ### 1. Prerequisites
 - **Python 3.9+** with `pandas`, `numpy`, and `scikit-learn`
 - **C++ Compiler**: `g++` (MinGW on Windows / GCC on Linux) with C++17 support
+- **Node.js 18+** & `npm`
 
 ```bash
+# Install Python ML dependencies
 pip install pandas numpy scikit-learn
+
+# Install frontend dependencies
+cd frontend
+npm install
+cd ..
 ```
 
-### 2. Train the Models
-Train both models to produce the standardized JSON configuration files:
-
+### 2. Train the Models (Optional — Pre-trained JSONs included)
 ```bash
-# Train heart neural network -> produces heart_model.json
 python train_heart.py
-
-# Train stroke neural network -> produces stroke_prediction.json
 python train_stroke.py
 ```
 
-### 3. Build and Run the C++ Server
-Compile the native inference server and start it on port 8080:
-
+### 3. Compile and Run the C++ Inference Server
 ```powershell
-# Compile with C++17 and optimization (Windows MinGW / GCC)
-g++ -std=c++17 -O2 -o server.exe server.cpp -lws2_32
+# Compile with C++17 and optimization
+g++ -O3 -std=c++17 -D_WIN32_WINNT=0x0A00 server.cpp -o server.exe -lws2_32
 
-# Run the server
+# Run the server on port 8080
 .\server.exe
 ```
-*The server will start listening at `http://0.0.0.0:8080`.*
+*The server listens on `http://127.0.0.1:8080`.*
 
 ### 4. Launch the Web Application
-Open [`frontend/medflowai.html`](frontend/medflowai.html) directly in any modern browser:
-
 ```powershell
-Start-Process (Resolve-Path ".\frontend\medflowai.html").Path
+# Run the Vite React frontend
+cd frontend
+npm run dev
 ```
-The status pill in the top header will display **"Connected to inference server"** (in green).
+Open **[http://localhost:5173/](http://localhost:5173/)** in your browser.
 
----
+*Demo credentials:*
+- **Email**: `demo@medflowai.com`
+- **Password**: `demo`
 
-## 🧪 Testing the Live System
-
-You can test the running server endpoints directly via PowerShell or cURL:
-
-```powershell
-# Test Predict Endpoint
-$body = '{"features":{"age":55,"sex":1,"cp":0,"trestbps":130,"chol":220,"fbs":0,"restecg":0,"thalach":150,"exang":1,"oldpeak":2.8,"slope":1,"ca":3,"thal":2,"gender":1,"hypertension":0,"heart_disease":0,"ever_married":1,"Residence_type":1,"avg_glucose_level":90,"bmi":26,"work_type_Never_worked":0,"work_type_Private":1,"work_type_Self-employed":0,"work_type_children":0,"smoking_status_formerly smoked":0,"smoking_status_never smoked":1,"smoking_status_smokes":0}}';
-Invoke-WebRequest -Uri "http://localhost:8080/predict" -Method POST -ContentType "application/json" -Body $body | Select-Object -ExpandProperty Content
-
-# Test Counterfactual Endpoint (Dropping ST depression from 2.8mm to 0.0mm)
-$cf = '{"features":{"age":55,"sex":1,"cp":0,"trestbps":130,"chol":220,"fbs":0,"restecg":0,"thalach":150,"exang":1,"oldpeak":2.8,"slope":1,"ca":3,"thal":2,"gender":1,"hypertension":0,"heart_disease":0,"ever_married":1,"Residence_type":1,"avg_glucose_level":90,"bmi":26,"work_type_Never_worked":0,"work_type_Private":1,"work_type_Self-employed":0,"work_type_children":0,"smoking_status_formerly smoked":0,"smoking_status_never smoked":1,"smoking_status_smokes":0},"model":"heart","flip_field":"oldpeak","flip_value":0.0}';
-Invoke-WebRequest -Uri "http://localhost:8080/counterfactual" -Method POST -ContentType "application/json" -Body $cf | Select-Object -ExpandProperty Content
-```
+*(Alternatively, open [`frontend/medflowai.html`](frontend/medflowai.html) directly in any browser for the zero-build standalone version).*
 
 ---
 
 ## 🔒 Security, Privacy & Data Minimization
 
-MedflowAI adheres strictly to healthcare Privacy-by-Design principles:
+MedflowAI adheres strictly to healthcare **Privacy-by-Design** principles:
 
-1. **Zero-Persistence Data Minimization**:
-   - **Stateless Architecture**: MedflowAI never writes patient vitals, responses, or predicted risk scores to disk or databases. All inference operations execute strictly in-memory during the active HTTP request lifecycle.
-   - **Ephemeral Client State**: All form answers are stored in volatile React state in browser memory. Refreshing or closing the tab immediately purges all entered data.
+1. **Zero Server EHR Retention**:
+   - **Stateless Architecture**: MedflowAI never writes patient vitals, responses, or predicted risk scores to disk or server databases. All inference operations execute strictly in-memory during the active HTTP request lifecycle.
+   - **Client-Side History**: Assessment history is retained exclusively in the user's browser `localStorage`, giving the patient total control to view, simulate, or wipe their records anytime.
 
-2. **Decoupled Identity & Zero PII Coupling**:
-   - The clinical assessment form **never asks for** Patient Name, Email, Phone Number, Social Security Number, Date of Birth, or Address.
-   - Every browser session generates a cryptographic anonymous token (`crypto.randomUUID()`) passed via the `X-Session-ID` header. Even if server traffic were intercepted, clinical answers cannot be attributed to a real-world identity.
+2. **Decoupled Identity**:
+   - Clinical screening questions never request government IDs, physical addresses, phone numbers, or insurance data.
+   - Cryptographic anonymous session tokens (`crypto.randomUUID()`) passed via `X-Session-ID` prevent request correlation.
 
-3. **Privacy-Safe Audit Logging**:
-   - The C++ server logging middleware strictly records request metadata (`HTTP Method`, `Path`, `Status`, `Latency`, `Anonymous Session ID`).
-   - **Zero Plaintext Health Logging**: Request bodies, patient vitals, and prediction probabilities are strictly barred from server logs, stdout, and crash reports.
+3. **In-Stride Outlier & Input Sanitization**:
+   - The C++ engine rejects non-finite values (NaN, Inf) and enforces strict physiological bounds (e.g. $1 \le \text{age} \le 125$, $50 \le \text{BP} \le 260$).
+   - OOD distance checks prevent trusting predictions on out-of-distribution vitals.
 
-4. **API Hardening, Sanitization & Rate Limiting**:
-   - **Physiological Bounds Validation**: The C++ server enforces physiological limits on all numerical inputs (e.g. $1 \le \text{age} \le 125$, $50 \le \text{BP} \le 260$, $60 \le \text{Chol} \le 650$) and ensures all inputs are finite numbers, rejecting injection attacks and corrupted payloads with HTTP 400.
-   - **Sliding-Window Rate Limiting**: A thread-safe in-memory rate limiter caps requests at 60 req/min per IP to protect the inference engine from scraping and denial-of-service.
-   - **Security Headers**: Transmits `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`, and `X-Frame-Options: DENY`.
-
-5. **Encryption in Transit & At Rest**:
-   - All network traffic is designed to route over **HTTPS/TLS**. For local demonstrations, `cpp-httplib` integrates with OpenSSL or runs behind a local Caddy/Nginx reverse proxy.
-   - By enforcing zero persistence, there is no unencrypted data-at-rest attack surface.
+4. **Sliding-Window Rate Limiting & Security Headers**:
+   - In-memory rate limiting caps requests at 60 req/min per IP.
+   - Headers include `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and CORS headers restricting API abuse.
 
 ---
 
@@ -270,26 +280,31 @@ MedflowAI adheres strictly to healthcare Privacy-by-Design principles:
 ml_flow/
 ├── heart.csv                     # Raw UCI Heart Disease dataset
 ├── stroke_prediction.csv         # Raw Healthcare Stroke dataset
-├── train_heart.py                # Python training & export for Heart Model
-├── train_stroke.py               # Python training & export for Stroke Model
-├── heart_model.json              # Trained MLP weights & scaler (Heart)
-├── stroke_prediction.json        # Trained MLP weights & scaler (Stroke)
-├── server.cpp                    # C++ inference engine & HTTP REST server
+├── train_heart.py                # Python training & export for Heart GBDT
+├── train_stroke.py               # Python training & export for Stroke GBDT
+├── heart_model.json              # Calibrated GBDT tree structures & OOD centroid (Heart)
+├── stroke_prediction.json        # Calibrated GBDT tree structures & OOD centroid (Stroke)
+├── server.cpp                    # C++ UnifiedModel inference engine & HTTP REST server
 ├── server.exe                    # Compiled C++ server executable
 ├── httplib.h                     # C++ header-only HTTP server library
 ├── json.hpp                      # C++ header-only JSON library
-├── architecture.md               # Detailed architecture diagrams & specs
-├── README.md                     # Complete project documentation
+├── architecture.md               # Detailed architectural specifications
+├── README.md                     # Comprehensive project documentation
+├── .gitignore                    # Git ignore rules for binaries, node_modules & data
 └── frontend/
-    ├── medflowai.html            # Standalone all-in-one web application
-    ├── src/                      # Modular React application source
-    │   ├── App.jsx               # Root React application component
-    │   ├── styles.css            # Custom CSS & design system tokens
-    │   └── lib/
-    │       ├── encoder.js        # Feature encoder & validation rules
-    │       ├── risk.js           # Risk tiering, clinical drivers & next steps
-    │       ├── questions.js      # Questionnaire flow & specifications
-    │       └── api.js            # API client with timeout and mock fallback
-    ├── package.json              # Optional Vite setup dependencies
-    └── vite.config.js            # Vite bundler config
+    ├── index.html                # Vite React HTML entry point
+    ├── medflowai.html            # Standalone zero-build web application
+    ├── package.json              # Frontend package definitions
+    ├── vite.config.js            # Vite bundler config
+    └── src/
+        ├── App.jsx               # Root React application & state router
+        ├── styles.css            # Design system, charts, and dark/light themes
+        └── lib/
+            ├── api.js            # API client with timeout and mock fallback
+            ├── encoder.js        # Feature encoder & physiological validation
+            ├── history.js        # Privacy-preserving local assessment history manager
+            ├── pdf.js            # Client-side PDF summary generator
+            ├── questions.js      # 21-question questionnaire specifications
+            ├── risk.js           # Risk tiering, clinical drivers & next steps
+            └── userStorage.js    # Client authentication & session manager
 ```
