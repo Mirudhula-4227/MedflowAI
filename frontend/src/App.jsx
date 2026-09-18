@@ -5,6 +5,12 @@ import { predict, counterfactual, API_BASE } from './lib/api.js';
 import { tierFor, overallTier, pct, explain, nextSteps, LEVERS } from './lib/risk.js';
 import { currentUser, loadAssessment, register, saveAssessment, signIn, signOut } from './lib/userStorage.js';
 import { downloadPredictionSummary } from './lib/pdf.js';
+import {
+  getHistory,
+  saveAssessmentToHistory,
+  deleteAssessmentFromHistory,
+  clearUserHistory,
+} from './lib/history.js';
 
 const TONE = { neutral: 'var(--brand)', heart: 'var(--heart)', stroke: 'var(--stroke)' };
 
@@ -28,7 +34,7 @@ function Mark() {
   );
 }
 
-function Shell({ children, source, user, onSignOut }) {
+function Shell({ children, source, user, onSignOut, historyCount = 0, onOpenHistory }) {
   const live = source === 'live';
   const initials = user
     ? user.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2)
@@ -45,6 +51,20 @@ function Shell({ children, source, user, onSignOut }) {
                 : 'Demo data — server unreachable'
               : API_BASE}
           </span>
+          {user && onOpenHistory && (
+            <button
+              className="btn-history"
+              onClick={onOpenHistory}
+              title="View risk trajectory & past assessment history"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+              <span>History</span>
+              {historyCount > 0 && <span className="history-count-badge">{historyCount}</span>}
+            </button>
+          )}
           {user && (
             <div className="topbar-user">
               <div className="avatar" title={user}>{initials}</div>
@@ -199,7 +219,7 @@ export function Login({ onLogin }) {
 
 /* ============================ landing ============================ */
 
-function Landing({ onStart, onSample }) {
+function Landing({ onStart, onSample, historyCount = 0, onOpenHistory }) {
   return (
     <div className="col">
       <svg className="hero-trace" viewBox="0 0 700 92" preserveAspectRatio="none" aria-hidden="true">
@@ -207,13 +227,18 @@ function Landing({ onStart, onSample }) {
       </svg>
       <h1>Twenty-one questions, one at a time, and a number you can act on.</h1>
       <p className="lede">
-        MedFlowAI runs your answers through two neural networks — one trained on cardiac
+        MedFlowAI runs your answers through two calibrated gradient boosted decision tree models — one trained on cardiac
         catheterisation records, one on stroke outcomes — and shows you which single change
         would move your risk the most.
       </p>
       <div className="actions">
         <button className="btn on-shell" onClick={onStart}>Start the questions</button>
         <button className="btn ghost on-shell" onClick={onSample}>Fill with a sample patient</button>
+        {historyCount > 0 && onOpenHistory && (
+          <button className="btn ghost on-shell" onClick={onOpenHistory}>
+            View Risk Trajectory ({historyCount})
+          </button>
+        )}
       </div>
       <div className="facts">
         <div className="fact"><b>96.1%</b><span>Heart model test accuracy</span></div>
@@ -406,7 +431,7 @@ function ScoreCard({ name, risk, tier, drivers }) {
   );
 }
 
-function Results({ features, result, onExplore, onRestart, error, user }) {
+function Results({ features, result, onExplore, onRestart, error, user, historyCount = 0, onOpenHistory }) {
   const ex = explain(features, result.heart_risk, result.stroke_risk);
   const steps = nextSteps(features, result.heart_risk, result.stroke_risk);
   const tier = overallTier(result.heart_risk, result.stroke_risk);
@@ -439,6 +464,11 @@ function Results({ features, result, onExplore, onRestart, error, user }) {
         </details>
         <div className="actions">
           <button className="btn" onClick={onExplore}>Try changing one thing</button>
+          {onOpenHistory && (
+            <button className="btn ghost" onClick={onOpenHistory}>
+              Risk Trajectory ({historyCount})
+            </button>
+          )}
           <button
             className="btn ghost"
             onClick={() => downloadPredictionSummary({
@@ -565,6 +595,461 @@ function Counterfactual({ features, baseline, onBack }) {
   );
 }
 
+/* ============================ trajectory chart ============================ */
+
+function RiskTrajectoryChart({ history, onLoadRecord }) {
+  const [showHeart, setShowHeart] = useState(true);
+  const [showStroke, setShowStroke] = useState(true);
+
+  // Chronological order: oldest assessment first (index 0), latest last
+  const records = useMemo(() => [...history].reverse(), [history]);
+  const [selectedIdx, setSelectedIdx] = useState(() => Math.max(0, records.length - 1));
+
+  // Keep selected point synced when records change
+  useEffect(() => {
+    setSelectedIdx(Math.max(0, records.length - 1));
+  }, [records.length]);
+
+  if (!records || records.length === 0) return null;
+
+  if (records.length === 1) {
+    const single = records[0];
+    return (
+      <div className="history-chart-card">
+        <div className="history-chart-top">
+          <div className="history-chart-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--pulse)' }}>
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+            </svg>
+            <span>Risk Trajectory Baseline</span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>1 screening recorded</div>
+        </div>
+        <div style={{ padding: '14px 16px', background: 'var(--paper-2)', borderRadius: 10, fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.5 }}>
+          Your initial baseline risk is established at <strong>Heart: {pct(single.heart_risk)}</strong> and <strong>Stroke: {pct(single.stroke_risk)}</strong>. Complete future screenings to view your multi-visit trajectory curve, comparative deltas, and risk reduction trends.
+        </div>
+      </div>
+    );
+  }
+
+  // Multi-point SVG chart parameters
+  const W = 720;
+  const H = 200;
+  const padL = 44;
+  const padR = 24;
+  const padT = 22;
+  const padB = 34;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const N = records.length;
+
+  const yTicks = [0, 0.2, 0.4, 0.6, 0.8, 1.0];
+
+  const points = records.map((rec, i) => {
+    const x = padL + (i / (N - 1)) * plotW;
+    const clampedH = Math.min(Math.max(rec.heart_risk, 0), 1);
+    const clampedS = Math.min(Math.max(rec.stroke_risk, 0), 1);
+    const yH = padT + (1 - clampedH) * plotH;
+    const yS = padT + (1 - clampedS) * plotH;
+    return { x, yH, yS, record: rec, index: i };
+  });
+
+  const heartPath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.yH.toFixed(1)}`).join(' ');
+  const strokePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.yS.toFixed(1)}`).join(' ');
+
+  const heartArea = `${heartPath} L ${points[N - 1].x.toFixed(1)} ${(padT + plotH).toFixed(1)} L ${points[0].x.toFixed(1)} ${(padT + plotH).toFixed(1)} Z`;
+  const strokeArea = `${strokePath} L ${points[N - 1].x.toFixed(1)} ${(padT + plotH).toFixed(1)} L ${points[0].x.toFixed(1)} ${(padT + plotH).toFixed(1)} Z`;
+
+  const selPoint = points[selectedIdx] || points[points.length - 1];
+  const selRec = selPoint.record;
+  const prevRec = selectedIdx > 0 ? points[selectedIdx - 1].record : null;
+
+  const heartDelta = prevRec ? (selRec.heart_risk - prevRec.heart_risk) * 100 : null;
+  const strokeDelta = prevRec ? (selRec.stroke_risk - prevRec.stroke_risk) * 100 : null;
+
+  const firstRec = records[0];
+  const latestRec = records[N - 1];
+  const netHeart = (latestRec.heart_risk - firstRec.heart_risk) * 100;
+  const netStroke = (latestRec.stroke_risk - firstRec.stroke_risk) * 100;
+
+  return (
+    <div className="history-chart-card">
+      <div className="history-chart-top">
+        <div className="history-chart-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--pulse)' }}>
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+          </svg>
+          <span>Risk Trajectory ({N} Screenings)</span>
+          <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--ink-3)', marginLeft: 6 }}>
+            Net Heart: <b style={{ color: netHeart <= 0 ? 'var(--pulse)' : 'var(--heart)' }}>{netHeart <= 0 ? '' : '+'}{netHeart.toFixed(1)}%</b> | Net Stroke: <b style={{ color: netStroke <= 0 ? 'var(--pulse)' : 'var(--stroke)' }}>{netStroke <= 0 ? '' : '+'}{netStroke.toFixed(1)}%</b>
+          </span>
+        </div>
+
+        <div className="history-chart-legend">
+          <div
+            className="chart-legend-item"
+            data-active={String(showHeart)}
+            onClick={() => setShowHeart((v) => !v)}
+            role="button"
+            tabIndex={0}
+            title="Toggle Heart Disease curve"
+          >
+            <span className="legend-dot" style={{ background: 'var(--heart)' }} />
+            <span>Heart Disease</span>
+          </div>
+          <div
+            className="chart-legend-item"
+            data-active={String(showStroke)}
+            onClick={() => setShowStroke((v) => !v)}
+            role="button"
+            tabIndex={0}
+            title="Toggle Stroke curve"
+          >
+            <span className="legend-dot" style={{ background: 'var(--stroke)' }} />
+            <span>Stroke</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="history-chart-wrapper">
+        <svg className="history-svg-chart" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-label="Risk trajectory line chart">
+          <defs>
+            <linearGradient id="chart-heart-grad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--heart)" stopOpacity="0.20" />
+              <stop offset="100%" stopColor="var(--heart)" stopOpacity="0.0" />
+            </linearGradient>
+            <linearGradient id="chart-stroke-grad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--stroke)" stopOpacity="0.20" />
+              <stop offset="100%" stopColor="var(--stroke)" stopOpacity="0.0" />
+            </linearGradient>
+          </defs>
+
+          {/* Risk Zone Background Tints */}
+          <rect x={padL} y={padT} width={plotW} height={plotH * 0.6} fill="rgba(224, 82, 102, 0.03)" />
+          <rect x={padL} y={padT + plotH * 0.6} width={plotW} height={plotH * 0.2} fill="rgba(216, 154, 43, 0.03)" />
+          <rect x={padL} y={padT + plotH * 0.8} width={plotW} height={plotH * 0.2} fill="rgba(46, 158, 126, 0.03)" />
+
+          {/* Horizontal Gridlines & Y-Axis Labels */}
+          {yTicks.map((tick) => {
+            const y = padT + (1 - tick) * plotH;
+            return (
+              <g key={tick}>
+                <line
+                  x1={padL}
+                  y1={y}
+                  x2={padL + plotW}
+                  y2={y}
+                  stroke={tick === 0 ? 'var(--line)' : 'rgba(0, 0, 0, 0.06)'}
+                  strokeDasharray={tick === 0 ? undefined : '3 3'}
+                  strokeWidth="1"
+                />
+                <text
+                  x={padL - 8}
+                  y={y + 4}
+                  textAnchor="end"
+                  fontSize="10"
+                  fill="var(--ink-3)"
+                  fontFamily="var(--mono)"
+                >
+                  {(tick * 100).toFixed(0)}%
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Vertical Gridlines & X-Axis Labels */}
+          {points.map((p, i) => (
+            <g key={p.record.id}>
+              <line
+                x1={p.x}
+                y1={padT}
+                x2={p.x}
+                y2={padT + plotH}
+                stroke="rgba(0, 0, 0, 0.04)"
+                strokeDasharray="2 2"
+                strokeWidth="1"
+              />
+              <text
+                x={p.x}
+                y={padT + plotH + 18}
+                textAnchor="middle"
+                fontSize="11"
+                fill={selectedIdx === i ? 'var(--ink-0)' : 'var(--ink-3)'}
+                fontWeight={selectedIdx === i ? '600' : '400'}
+              >
+                #{i + 1}
+              </text>
+            </g>
+          ))}
+
+          {/* Area Gradients */}
+          {showStroke && <path d={strokeArea} fill="url(#chart-stroke-grad)" />}
+          {showHeart && <path d={heartArea} fill="url(#chart-heart-grad)" />}
+
+          {/* Lines */}
+          {showStroke && (
+            <path
+              d={strokePath}
+              fill="none"
+              stroke="var(--stroke)"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          )}
+          {showHeart && (
+            <path
+              d={heartPath}
+              fill="none"
+              stroke="var(--heart)"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          )}
+
+          {/* Selected Indicator Vertical Line */}
+          {selPoint && (
+            <line
+              x1={selPoint.x}
+              y1={padT}
+              x2={selPoint.x}
+              y2={padT + plotH}
+              stroke="var(--brand)"
+              strokeWidth="1.5"
+              strokeDasharray="3 3"
+              opacity="0.6"
+            />
+          )}
+
+          {/* Data Points */}
+          {points.map((p, i) => {
+            const isSel = selectedIdx === i;
+            return (
+              <g key={`pts-${p.record.id}`}>
+                {showStroke && (
+                  <circle
+                    cx={p.x}
+                    cy={p.yS}
+                    r={isSel ? 6.5 : 4.5}
+                    fill="var(--stroke)"
+                    stroke="#ffffff"
+                    strokeWidth={isSel ? 3 : 1.5}
+                    className="chart-data-point"
+                    onClick={() => setSelectedIdx(i)}
+                  >
+                    <title>{`Visit #${i + 1}: Stroke ${pct(p.record.stroke_risk)}`}</title>
+                  </circle>
+                )}
+                {showHeart && (
+                  <circle
+                    cx={p.x}
+                    cy={p.yH}
+                    r={isSel ? 6.5 : 4.5}
+                    fill="var(--heart)"
+                    stroke="#ffffff"
+                    strokeWidth={isSel ? 3 : 1.5}
+                    className="chart-data-point"
+                    onClick={() => setSelectedIdx(i)}
+                  >
+                    <title>{`Visit #${i + 1}: Heart ${pct(p.record.heart_risk)}`}</title>
+                  </circle>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+
+        {/* Interactive HUD below chart */}
+        {selRec && (
+          <div className="chart-tooltip-hud">
+            <div>
+              <strong>Visit #{selectedIdx + 1}</strong>
+              <span style={{ color: 'var(--ink-3)', marginLeft: 6 }}>({selRec.formattedDate})</span>:
+              <span style={{ marginLeft: 10, color: 'var(--heart)', fontWeight: 600 }}>
+                Heart {pct(selRec.heart_risk)}
+                {heartDelta != null && (
+                  <small style={{ fontWeight: 400, marginLeft: 4, color: heartDelta <= 0 ? 'var(--pulse)' : 'var(--heart)' }}>
+                    ({heartDelta <= 0 ? '' : '+'}{heartDelta.toFixed(1)}%)
+                  </small>
+                )}
+              </span>
+              <span style={{ marginLeft: 10, color: 'var(--stroke)', fontWeight: 600 }}>
+                Stroke {pct(selRec.stroke_risk)}
+                {strokeDelta != null && (
+                  <small style={{ fontWeight: 400, marginLeft: 4, color: strokeDelta <= 0 ? 'var(--pulse)' : 'var(--stroke)' }}>
+                    ({strokeDelta <= 0 ? '' : '+'}{strokeDelta.toFixed(1)}%)
+                  </small>
+                )}
+              </span>
+            </div>
+            {onLoadRecord && (
+              <button
+                type="button"
+                className="btn-card-action btn-card-load"
+                style={{ padding: '3px 10px', fontSize: 12 }}
+                onClick={() => onLoadRecord(selRec)}
+              >
+                Simulate Visit #{selectedIdx + 1}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================ history modal ============================ */
+
+function HistoryModal({ isOpen, onClose, history, onLoadRecord, onDeleteRecord, onClearHistory }) {
+  if (!isOpen) return null;
+
+  const latest = history[0];
+  const previous = history[1];
+
+  let heartDelta = null;
+  let strokeDelta = null;
+  if (latest && previous) {
+    heartDelta = (latest.heart_risk - previous.heart_risk) * 100;
+    strokeDelta = (latest.stroke_risk - previous.stroke_risk) * 100;
+  }
+
+  return (
+    <div
+      className="history-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="history-modal-title"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="history-modal">
+        <div className="history-modal-header">
+          <div>
+            <h2 id="history-modal-title">Assessment History & Trajectory</h2>
+            <p className="history-privacy-note">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0110 0v4" />
+              </svg>
+              <span>Zero server-side EHR retention — stored securely in your browser session</span>
+            </p>
+          </div>
+          <button className="btn-close-modal" onClick={onClose} aria-label="Close history modal">✕</button>
+        </div>
+
+        {/* Embedded Interactive Risk Trajectory Chart */}
+        <RiskTrajectoryChart history={history} onLoadRecord={onLoadRecord} />
+
+        {history.length > 0 && (
+          <div className="history-summary-bar">
+            <div className="summary-stat">
+              <span className="summary-stat-label">Total Screenings</span>
+              <span className="summary-stat-val">{history.length}</span>
+            </div>
+            <div className="summary-stat">
+              <span className="summary-stat-label">Latest Heart Risk</span>
+              <span className="summary-stat-val" style={{ color: tierFor(latest.heart_risk).color }}>
+                {pct(latest.heart_risk)}
+                {heartDelta != null && (
+                  <small style={{ fontSize: '11px', marginLeft: '6px', color: heartDelta <= 0 ? 'var(--pulse)' : 'var(--heart)' }}>
+                    ({heartDelta <= 0 ? '' : '+'}{heartDelta.toFixed(1)}%)
+                  </small>
+                )}
+              </span>
+            </div>
+            <div className="summary-stat">
+              <span className="summary-stat-label">Latest Stroke Risk</span>
+              <span className="summary-stat-val" style={{ color: tierFor(latest.stroke_risk).color }}>
+                {pct(latest.stroke_risk)}
+                {strokeDelta != null && (
+                  <small style={{ fontSize: '11px', marginLeft: '6px', color: strokeDelta <= 0 ? 'var(--pulse)' : 'var(--stroke)' }}>
+                    ({strokeDelta <= 0 ? '' : '+'}{strokeDelta.toFixed(1)}%)
+                  </small>
+                )}
+              </span>
+            </div>
+          </div>
+        )}
+
+        <div className="history-modal-body">
+          {history.length === 0 ? (
+            <div className="history-empty-state">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+              <h3>No assessments recorded yet</h3>
+              <p>Complete a 21-question health screening to track your cardiovascular risks and counterfactual trajectories over time.</p>
+            </div>
+          ) : (
+            history.map((item, idx) => {
+              const hTier = tierFor(item.heart_risk);
+              const sTier = tierFor(item.stroke_risk);
+              const f = item.features || {};
+              return (
+                <article key={item.id} className="history-item-card">
+                  <div className="history-card-top">
+                    <div className="history-card-date">
+                      <span>{item.formattedDate}</span>
+                      {idx === 0 && <span className="latest-pill">Latest</span>}
+                      {item.confidence && (
+                        <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '6px', background: item.confidence === 'HIGH' ? '#e6f7f2' : '#fef3c7', color: item.confidence === 'HIGH' ? '#0d684c' : '#92400e', fontWeight: 600 }}>
+                          {item.confidence} CONFIDENCE
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="history-card-scores">
+                    <div className="history-score-box" style={{ borderColor: hTier.color }}>
+                      <div className="history-score-label">Heart Disease Risk ({hTier.label})</div>
+                      <div className="history-score-num" style={{ color: hTier.color }}>{pct(item.heart_risk)}</div>
+                    </div>
+                    <div className="history-score-box" style={{ borderColor: sTier.color }}>
+                      <div className="history-score-label">Stroke Risk ({sTier.label})</div>
+                      <div className="history-score-num" style={{ color: sTier.color }}>{pct(item.stroke_risk)}</div>
+                    </div>
+                  </div>
+
+                  <div className="history-vitals-row">
+                    {f.age != null && <span className="history-vital-chip">Age: <b>{f.age}</b></span>}
+                    {f.trestbps != null && <span className="history-vital-chip">BP: <b>{f.trestbps}</b> mmHg</span>}
+                    {f.chol != null && <span className="history-vital-chip">Chol: <b>{f.chol}</b> mg/dL</span>}
+                    {f.avg_glucose_level != null && <span className="history-vital-chip">Glucose: <b>{Math.round(f.avg_glucose_level)}</b> mg/dL</span>}
+                    {f.bmi != null && <span className="history-vital-chip">BMI: <b>{Number(f.bmi).toFixed(1)}</b></span>}
+                    {f.thalach != null && <span className="history-vital-chip">Max HR: <b>{f.thalach}</b> bpm</span>}
+                  </div>
+
+                  <div className="history-card-bottom">
+                    <button className="btn-card-action btn-card-load" onClick={() => onLoadRecord(item)}>
+                      Inspect & Simulate
+                    </button>
+                    <button className="btn-card-action btn-card-del" onClick={() => onDeleteRecord(item.id)} title="Delete this entry">
+                      Delete
+                    </button>
+                  </div>
+                </article>
+              );
+            })
+          )}
+        </div>
+
+        <div className="history-modal-footer">
+          {history.length > 0 ? (
+            <button className="btn-clear-all" onClick={onClearHistory}>
+              Clear All Records
+            </button>
+          ) : (
+            <div />
+          )}
+          <button className="btn ghost" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ============================ app ============================ */
 
 export function App() {
@@ -576,14 +1061,25 @@ export function App() {
   const [result, setResult]     = useState(() => saved?.result || null);
   const [features, setFeatures] = useState(() => saved?.features || null);
   const [error, setError]       = useState(() => saved?.error || null);
+  const [history, setHistory]   = useState(() => getHistory(user?.id || user?.name));
+  const [showHistory, setShowHistory] = useState(false);
 
   useEffect(() => {
     if (user) saveAssessment(user.id, { screen, index, answers, result, features, error });
   }, [user, screen, index, answers, result, features, error]);
 
+  useEffect(() => {
+    if (user) {
+      setHistory(getHistory(user.id || user.name));
+    } else {
+      setHistory([]);
+    }
+  }, [user]);
+
   const handleLogin = (nextUser) => {
     const assessment = loadAssessment(nextUser.id);
     setUser(nextUser);
+    setHistory(getHistory(nextUser.id || nextUser.name));
     setScreen(assessment?.screen || 'landing');
     setIndex(assessment?.index || 0);
     setAnswers(assessment?.answers || {});
@@ -591,10 +1087,13 @@ export function App() {
     setFeatures(assessment?.features || null);
     setError(assessment?.error || null);
   };
+
   const handleSignOut = () => {
     signOut();
     setUser(null);
     setAnswers({}); setIndex(0); setResult(null); setFeatures(null); setError(null);
+    setHistory([]);
+    setShowHistory(false);
     setScreen('landing');
   };
 
@@ -615,26 +1114,119 @@ export function App() {
     setError(res.source === 'mock' && res.reason
       ? `Could not reach the inference server (${res.reason}) — showing demo numbers.`
       : null);
+
+    // Auto-save assessment to local history
+    const updated = saveAssessmentToHistory(user.id || user.name, {
+      features: payload,
+      result: res,
+      answers: finalAnswers,
+    });
+    setHistory(updated);
+
     setScreen('results');
+  };
+
+  const handleLoadRecord = (record) => {
+    setFeatures(record.features);
+    setResult({
+      heart_risk: record.heart_risk,
+      stroke_risk: record.stroke_risk,
+      confidence: record.confidence,
+      ood_distance: record.ood_distance,
+      source: record.source,
+    });
+    setAnswers(record.answers || {});
+    setShowHistory(false);
+    setScreen('results');
+  };
+
+  const handleDeleteRecord = (id) => {
+    const updated = deleteAssessmentFromHistory(user.id || user.name, id);
+    setHistory(updated);
+  };
+
+  const handleClearHistory = () => {
+    if (window.confirm('Are you sure you want to permanently clear all your saved assessment history from this browser?')) {
+      const updated = clearUserHistory(user.id || user.name);
+      setHistory(updated);
+    }
   };
 
   const next = () => { if (index === QUESTIONS.length - 1) submit(answers); else setIndex((i) => i + 1); };
   const back = () => { if (index === 0) setScreen('landing'); else setIndex((i) => i - 1); };
   const restart = () => { setAnswers({}); setIndex(0); setResult(null); setFeatures(null); setError(null); setScreen('landing'); };
 
-  const shellProps = { user: user.name, onSignOut: handleSignOut };
+  const shellProps = {
+    user: user.name,
+    onSignOut: handleSignOut,
+    historyCount: history.length,
+    onOpenHistory: () => setShowHistory(true),
+  };
 
-  if (screen === 'landing')
-    return <Shell {...shellProps}><Landing onStart={() => { setIndex(0); setScreen('form'); }} onSample={() => { setAnswers(SAMPLE_ANSWERS); submit(SAMPLE_ANSWERS); }} /></Shell>;
+  return (
+    <>
+      <HistoryModal
+        isOpen={showHistory}
+        onClose={() => setShowHistory(false)}
+        history={history}
+        onLoadRecord={handleLoadRecord}
+        onDeleteRecord={handleDeleteRecord}
+        onClearHistory={handleClearHistory}
+      />
 
-  if (screen === 'form')
-    return <Shell {...shellProps}><QuestionScreen index={index} answers={answers} setAnswer={setAnswer} onNext={next} onBack={back} /></Shell>;
+      {screen === 'landing' && (
+        <Shell {...shellProps}>
+          <Landing
+            onStart={() => { setIndex(0); setScreen('form'); }}
+            onSample={() => { setAnswers(SAMPLE_ANSWERS); submit(SAMPLE_ANSWERS); }}
+            historyCount={history.length}
+            onOpenHistory={() => setShowHistory(true)}
+          />
+        </Shell>
+      )}
 
-  if (screen === 'loading')
-    return <Shell {...shellProps}><LoadingScreen /></Shell>;
+      {screen === 'form' && (
+        <Shell {...shellProps}>
+          <QuestionScreen
+            index={index}
+            answers={answers}
+            setAnswer={setAnswer}
+            onNext={next}
+            onBack={back}
+          />
+        </Shell>
+      )}
 
-  if (screen === 'results')
-    return <Shell source={result?.source} {...shellProps}><Results features={features} result={result} error={error} user={user.name} onExplore={() => setScreen('cf')} onRestart={restart} /></Shell>;
+      {screen === 'loading' && (
+        <Shell {...shellProps}>
+          <LoadingScreen />
+        </Shell>
+      )}
 
-  return <Shell source={result?.source} {...shellProps}><Counterfactual features={features} baseline={result} onBack={() => setScreen('results')} /></Shell>;
+      {screen === 'results' && (
+        <Shell source={result?.source} {...shellProps}>
+          <Results
+            features={features}
+            result={result}
+            error={error}
+            user={user.name}
+            historyCount={history.length}
+            onOpenHistory={() => setShowHistory(true)}
+            onExplore={() => setScreen('cf')}
+            onRestart={restart}
+          />
+        </Shell>
+      )}
+
+      {screen === 'cf' && (
+        <Shell source={result?.source} {...shellProps}>
+          <Counterfactual
+            features={features}
+            baseline={result}
+            onBack={() => setScreen('results')}
+          />
+        </Shell>
+      )}
+    </>
+  );
 }
