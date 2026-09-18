@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+
+# Data (large CSVs — don't commit raw data to git)
+*.csv
+
+# OS
+.DS_Store
+Thumbs.db
