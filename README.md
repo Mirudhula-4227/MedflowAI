@@ -1,4 +1,5 @@
-# MedflowAI — ML Models (Person A)
+# MedflowAI
+codecortex hackathon
 
 ## Heart Disease + Stroke Prediction
 
@@ -14,7 +15,7 @@ Neural network models trained on heart disease and stroke datasets, exported as 
 | `stroke_prediction.json` | Stroke model weights — ready for C++ backend |
 
 ### Model Architecture
-Both models: `Input → 64 → 32 → 1 (sigmoid)`
+Both models: `Input -> 64 -> 32 -> 1 (sigmoid)`
 
 ### C++ Inference (identical for both models)
 ```cpp
@@ -31,7 +32,7 @@ Both models: `Input → 64 → 32 → 1 (sigmoid)`
 | Model | Accuracy |
 |---|---|
 | Heart Disease | **96.1%** |
-| Stroke | 70% (optimised for recall — catches 80% of real stroke cases) |
+| Stroke | 70% (optimised for recall -- catches 80% of real stroke cases) |
 
 ### Run
 ```bash
