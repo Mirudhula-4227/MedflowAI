@@ -71,6 +71,7 @@ flowchart TB
 
 ---
 
+<<<<<<< HEAD
 ### 2. The Native C++ Inference Server (`server.cpp`)
 - **Header-Only Dependencies**: Built using [`cpp-httplib`](httplib.h) for cross-platform HTTP networking and [`nlohmann/json`](json.hpp) for fast JSON parsing.
 - **In-Memory Model Representation**:
@@ -87,6 +88,33 @@ flowchart TB
   3. **Hidden Layer 2**: $h_2 = \text{ReLU}(W_2 h_1 + b_2)$
   4. **Output Layer**: $p = \sigma(W_3 h_2 + b_3) = \frac{1}{1 + e^{-\text{logit}}}$
 - **Latency**: Runs in **$< 1\text{ ms}$** per evaluation with no Python GIL, runtime interpreter, or heavy ML frameworks.
+=======
+## Model Cards
+
+### 🫀 Heart Disease Model
+| Property | Value |
+|---|---|
+| Dataset | Heart Disease (1,025 rows) |
+| Features | 13 (age, sex, cp, trestbps, chol, fbs, restecg, thalach, exang, oldpeak, slope, ca, thal) |
+| Architecture | `13 → 64 → 32 → 1` |
+| Activation | ReLU (hidden) · Sigmoid (output) |
+| Optimizer | Adam · lr=0.01 · α=0.01 |
+| **Test Accuracy** | **96.1%** |
+| Precision / Recall | 0.96 / 0.96 (both classes) |
+| Export | `heart_model.json` |
+
+### 🧠 Stroke Prediction Model
+| Property | Value |
+|---|---|
+| Dataset | Stroke Dataset (5,110 rows) |
+| Features | 15 (age, hypertension, heart_disease, glucose, BMI + encoded categoricals) |
+| Class Imbalance | 19.5 : 1 (no-stroke : stroke) → fixed with sample_weight |
+| Architecture | `15 → 64 → 32 → 1` |
+| Activation | ReLU (hidden) · Sigmoid (output) |
+| Tuning Metric | F1 (not accuracy — data is imbalanced) |
+| **Stroke Recall** | **80%** (catches 4 in 5 real stroke cases) |
+| Export | `stroke_prediction.json` |
+>>>>>>> c91f14845e0b5e84f62e1a8b5f34c9441eb8eb7b
 
 ---
 
