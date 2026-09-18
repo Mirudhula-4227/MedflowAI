@@ -9,7 +9,7 @@ MedflowAI is a full-stack clinical decision support system that predicts **heart
 
 ```mermaid
 flowchart TD
-    subgraph PersonA["🐍 Person A — ML Pipeline (Python)"]
+    subgraph PersonA["ML Pipeline (Python)"]
         direction TB
         CSV1[("heart.csv\n1025 rows · 13 features")]
         CSV2[("stroke_prediction.csv\n5110 rows · 15 features")]
@@ -17,13 +17,13 @@ flowchart TD
         PRE2["Preprocessing\nImpute · Scale · Encode\nClass imbalance 19.5:1 → sample_weight"]
         MLP1["MLP Classifier\n13 → 64 → 32 → 1\nReLU · Sigmoid\nGridSearchCV · 5-fold CV"]
         MLP2["MLP Classifier\n15 → 64 → 32 → 1\nReLU · Sigmoid\nGridSearchCV · F1 scoring"]
-        JSON1[/"heart_model.json\n✅ 96.1% accuracy"/]
-        JSON2[/"stroke_prediction.json\n✅ 80% stroke recall"/]
+        JSON1[/"heart_model.json"/]
+        JSON2[/"stroke_prediction.json"/]
         CSV1 --> PRE1 --> MLP1 --> JSON1
         CSV2 --> PRE2 --> MLP2 --> JSON2
     end
 
-    subgraph PersonB["⚙️ Person B — C++ Backend (cpp-httplib)"]
+    subgraph PersonB["C++ Backend (cpp-httplib)"]
         direction TB
         LOAD["Load JSON weights\nat startup"]
         EP1["POST /predict/heart"]
@@ -34,7 +34,7 @@ flowchart TD
         EP1 & EP2 & EP3 --> INFER
     end
 
-    subgraph PersonC["🌐 Person C — Frontend (HTML/JS)"]
+    subgraph PersonC["Frontend (HTML/JS)"]
         direction TB
         UI["One-question-at-a-time UI\nStep-by-step patient form"]
         RESULTS["Results Screen\nRisk score · Gauge chart"]
