@@ -82,6 +82,25 @@ export function mockPredict(f) {
   return {
     heart_risk: Number(sigmoid(heartZ).toFixed(4)),
     stroke_risk: Number(sigmoid(strokeZ).toFixed(4)),
+    confidence: 'HIGH',
+    hallucination_check: {
+      passed: true,
+      confidence_score: 1.0,
+      hallucination_risk: 'LOW',
+      epistemic_uncertainty: {
+        heart_tree_variance: 0.0001,
+        stroke_tree_variance: 0.00005,
+        heart_subensemble_drift: 0.008,
+        stroke_subensemble_drift: 0.005,
+      },
+      ood_metric: {
+        heart_ood_distance: 1.8,
+        heart_ood_threshold: 6.36,
+        stroke_ood_distance: 1.5,
+        stroke_ood_threshold: 5.92,
+      },
+      warnings: [],
+    },
   };
 }
 

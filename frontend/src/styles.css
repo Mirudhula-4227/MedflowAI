@@ -934,6 +934,85 @@ select.field {
   background: #fff;
 }
 
+/* ---------------- hallucination & clinical plausibility guard ---------------- */
+
+.hallucination-card {
+  margin-top: 24px;
+  border-radius: 14px;
+  padding: 16px 20px;
+  border: 1px solid;
+  transition: all 0.2s ease;
+}
+
+.hallucination-card[data-status="passed"] {
+  background: #f0fdf9;
+  border-color: #a7f3d0;
+  color: #065f46;
+}
+
+.hallucination-card[data-status="warning"] {
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #92400e;
+}
+
+.hallucination-card[data-status="danger"] {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+.hallucination-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.hallucination-badge-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.hallucination-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.hallucination-metrics {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
+.hallucination-metric-item {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.hallucination-desc {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: 0.9;
+}
+
+.hallucination-warnings-list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
 /* ---------------- counterfactual ---------------- */
 
 .lever-pick {

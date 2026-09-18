@@ -85,6 +85,18 @@ struct Prediction {
     double risk;
     double ood_distance;
     bool is_ood;
+    double ensemble_variance = 0.0;
+    double sub_ensemble_drift = 0.0;
+};
+
+struct HallucinationCheck {
+    bool passed = true;
+    std::string hallucination_risk = "LOW"; // "LOW", "ELEVATED", "HIGH"
+    double confidence_score = 1.0;          // 0.0 to 1.0
+    double ensemble_variance = 0.0;
+    double sub_ensemble_drift = 0.0;
+    std::vector<std::string> warnings;
+    bool clinical_sanity_verified = true;
 };
 
 static double relu(double x) { return x > 0.0 ? x : 0.0; }
@@ -128,10 +140,10 @@ static Prediction run_mlp_with_ood(const MLPModel& m, const std::vector<double>&
     }
 
     double risk = current.empty() ? 0.0 : current[0];
-    return { risk, ood_dist, is_ood };
+    return { risk, ood_dist, is_ood, 0.0, 0.0 };
 }
 
-// Forward pass through GBDT with Platt calibration and in-stride OOD check.
+// Forward pass through GBDT with Platt calibration, in-stride OOD check, and ensemble variance / drift calculation.
 static Prediction run_gbdt_with_ood(const GBDTModel& m, const std::vector<double>& raw_features) {
     double sum_sq = 0.0;
     for (size_t i = 0; i < raw_features.size(); ++i) {
@@ -144,7 +156,14 @@ static Prediction run_gbdt_with_ood(const GBDTModel& m, const std::vector<double
     bool is_ood = (ood_dist > m.ood_threshold);
 
     double sum_tree_values = 0.0;
-    for (const auto& tree : m.trees) {
+    double sum_first_half = 0.0;
+    std::vector<double> tree_vals;
+    tree_vals.reserve(m.trees.size());
+
+    size_t half_count = m.trees.size() / 2;
+
+    for (size_t t = 0; t < m.trees.size(); ++t) {
+        const auto& tree = m.trees[t];
         int node = 0;
         while (tree.left[node] != -1) {
             int feat = tree.feature[node];
@@ -155,11 +174,32 @@ static Prediction run_gbdt_with_ood(const GBDTModel& m, const std::vector<double
                 node = tree.right[node];
             }
         }
-        sum_tree_values += tree.value[node];
+        double v = tree.value[node];
+        tree_vals.push_back(v);
+        sum_tree_values += v;
+        if (t < half_count) {
+            sum_first_half += v;
+        }
     }
+
     double logit = m.base_logit + m.learning_rate * sum_tree_values;
     double risk = sigmoid(logit);
-    return { risk, ood_dist, is_ood };
+
+    // Sub-ensemble convergence drift (evaluating 50% trees scaled vs 100% trees)
+    double logit_half = m.base_logit + m.learning_rate * (sum_first_half * 2.0);
+    double risk_half = sigmoid(logit_half);
+    double drift = std::abs(risk - risk_half);
+
+    // Variance of individual tree outputs (epistemic disagreement)
+    double mean_tree_val = m.trees.empty() ? 0.0 : (sum_tree_values / m.trees.size());
+    double var_sum = 0.0;
+    for (double v : tree_vals) {
+        double diff = v - mean_tree_val;
+        var_sum += diff * diff;
+    }
+    double variance = m.trees.empty() ? 0.0 : (var_sum / m.trees.size());
+
+    return { risk, ood_dist, is_ood, variance, drift };
 }
 
 static Prediction run_model_with_ood(const UnifiedModel& m, const std::vector<double>& raw_features) {
@@ -172,6 +212,96 @@ static Prediction run_model_with_ood(const UnifiedModel& m, const std::vector<do
 
 static double run_model(const UnifiedModel& m, const std::vector<double>& raw_features) {
     return run_model_with_ood(m, raw_features).risk;
+}
+
+// Anti-Hallucination & Clinical Plausibility Verification Guard
+static HallucinationCheck verify_hallucination(
+    const json& f,
+    const Prediction& heart_pred,
+    const Prediction& stroke_pred,
+    double heart_ood_threshold,
+    double stroke_ood_threshold
+) {
+    HallucinationCheck check;
+    std::vector<std::string> warnings;
+
+    double max_variance = std::max(heart_pred.ensemble_variance, stroke_pred.ensemble_variance);
+    double max_drift = std::max(heart_pred.sub_ensemble_drift, stroke_pred.sub_ensemble_drift);
+    check.ensemble_variance = std::round(max_variance * 1000.0) / 1000.0;
+    check.sub_ensemble_drift = std::round(max_drift * 1000.0) / 1000.0;
+
+    // 1. Extreme Out-Of-Distribution check (Extrapolation Error)
+    if (heart_pred.ood_distance > heart_ood_threshold * 1.35) {
+        warnings.push_back("Extrapolation Alert: Cardiac profile exceeds training boundaries (OOD distance: " +
+                           std::to_string(std::round(heart_pred.ood_distance * 10.0) / 10.0) +
+                           " vs threshold " + std::to_string(std::round(heart_ood_threshold * 10.0) / 10.0) + "). Model predictions may be ungrounded.");
+    }
+    if (stroke_pred.ood_distance > stroke_ood_threshold * 1.35) {
+        warnings.push_back("Extrapolation Alert: Cerebrovascular profile exceeds training boundaries (OOD distance: " +
+                           std::to_string(std::round(stroke_pred.ood_distance * 10.0) / 10.0) +
+                           " vs threshold " + std::to_string(std::round(stroke_ood_threshold * 10.0) / 10.0) + "). Model predictions may be ungrounded.");
+    }
+
+    // 2. Ensemble Instability / Tree Divergence Check
+    if (max_drift > 0.22) {
+        warnings.push_back("Ensemble Divergence: Tree sub-ensembles drift significantly (" +
+                           std::to_string((int)std::round(max_drift * 100.0)) +
+                           "%), indicating unstable decision boundaries on this patient profile.");
+    }
+
+    // 3. Clinical Monotonicity & Pathological Consistency Rules
+    double ca = f.value("ca", 0.0);
+    double oldpeak = f.value("oldpeak", 0.0);
+    double age = f.value("age", 50.0);
+    double trestbps = f.value("trestbps", 120.0);
+    double exang = f.value("exang", 0.0);
+    double cp = f.value("cp", 0.0);
+
+    // Severe coronary pathology with paradoxical sub-baseline risk
+    if ((ca >= 2.0 || oldpeak >= 2.5) && heart_pred.risk < 0.32) {
+        warnings.push_back("Clinical Incongruity: Patient exhibits severe coronary pathology (fluoroscopy stenosis ca=" +
+                           std::to_string((int)ca) + ", ST depression oldpeak=" +
+                           std::to_string(oldpeak).substr(0, 4) + " mm) but model predicted low risk (" +
+                           std::to_string((int)(heart_pred.risk * 100)) + "%). Clinical safety review recommended.");
+    }
+
+    // Anatomical discrepancy in young patients
+    if (age < 26.0 && ca >= 2.0) {
+        warnings.push_back("Physiological Anomaly: Multi-vessel coronary calcification (ca=" +
+                           std::to_string((int)ca) + ") reported in a patient aged " + std::to_string((int)age) +
+                           ". Requires fluoroscopy record re-verification.");
+    }
+
+    // Stroke vascular triad contradiction
+    double hypertension = f.value("hypertension", 0.0);
+    double heart_disease = f.value("heart_disease", 0.0);
+    double glucose = f.value("avg_glucose_level", 100.0);
+
+    if (age >= 65.0 && hypertension >= 1.0 && heart_disease >= 1.0 && glucose >= 180.0 && stroke_pred.risk < 0.06) {
+        warnings.push_back("Clinical Incongruity: Elderly patient with established vascular triad (hypertension + diabetes + CAD) received unexpectedly low stroke risk (" +
+                           std::to_string((int)(stroke_pred.risk * 100)) + "%). Clinical override advised.");
+    }
+
+    // Compute composite confidence score (1.0 = perfect sanity, <0.6 = suspect)
+    double confidence_score = 1.0;
+    if (heart_pred.is_ood || stroke_pred.is_ood) confidence_score -= 0.25;
+    if (max_drift > 0.15) confidence_score -= 0.20;
+    if (!warnings.empty()) confidence_score -= (0.25 * warnings.size());
+    if (confidence_score < 0.05) confidence_score = 0.05;
+    check.confidence_score = std::round(confidence_score * 100.0) / 100.0;
+
+    if (warnings.empty()) {
+        check.passed = true;
+        check.hallucination_risk = (confidence_score >= 0.80) ? "LOW" : "ELEVATED";
+        check.clinical_sanity_verified = true;
+    } else {
+        check.passed = false;
+        check.hallucination_risk = (warnings.size() >= 2 || confidence_score < 0.50) ? "HIGH" : "ELEVATED";
+        check.clinical_sanity_verified = false;
+    }
+    check.warnings = warnings;
+
+    return check;
 }
 
 // Load model file (heart_model.json / stroke_prediction.json), auto-detecting MLP or GBDT
@@ -407,7 +537,13 @@ int main() {
             auto heart_pred = run_model_with_ood(heart_model, heart_x);
             auto stroke_pred = run_model_with_ood(stroke_model, stroke_x);
 
-            std::string confidence = (heart_pred.is_ood || stroke_pred.is_ood) ? "LOW" : "HIGH";
+            // 4. Anti-Hallucination & Clinical Plausibility Verification
+            double heart_thresh = (heart_model.arch == ModelArchitecture::GBDT) ? heart_model.gbdt.ood_threshold : heart_model.mlp.ood_threshold;
+            double stroke_thresh = (stroke_model.arch == ModelArchitecture::GBDT) ? stroke_model.gbdt.ood_threshold : stroke_model.mlp.ood_threshold;
+
+            auto h_check = verify_hallucination(features_obj, heart_pred, stroke_pred, heart_thresh, stroke_thresh);
+
+            std::string confidence = (heart_pred.is_ood || stroke_pred.is_ood || !h_check.passed) ? "LOW" : "HIGH";
 
             json out = {
                 { "heart_risk", heart_pred.risk },
@@ -419,7 +555,20 @@ int main() {
                 { "stroke_ood_distance", round(stroke_pred.ood_distance * 1000.0) / 1000.0 },
                 { "heart_model_type", heart_model.model_type },
                 { "stroke_model_type", stroke_model.model_type },
-                { "stateless", true }
+                { "stateless", true },
+                { "hallucination_check", {
+                    { "passed", h_check.passed },
+                    { "hallucination_risk", h_check.hallucination_risk },
+                    { "confidence_score", h_check.confidence_score },
+                    { "ensemble_variance", h_check.ensemble_variance },
+                    { "sub_ensemble_drift", h_check.sub_ensemble_drift },
+                    { "heart_ood_distance", round(heart_pred.ood_distance * 100.0) / 100.0 },
+                    { "heart_ood_threshold", round(heart_thresh * 100.0) / 100.0 },
+                    { "stroke_ood_distance", round(stroke_pred.ood_distance * 100.0) / 100.0 },
+                    { "stroke_ood_threshold", round(stroke_thresh * 100.0) / 100.0 },
+                    { "warnings", h_check.warnings },
+                    { "clinical_sanity_verified", h_check.clinical_sanity_verified }
+                }}
             };
             res.set_content(out.dump(), "application/json");
         } catch (const std::exception& e) {
@@ -455,18 +604,30 @@ int main() {
             UnifiedModel& model = (model_name == "heart") ? heart_model : stroke_model;
 
             auto original_x = extract_features(model, features_obj);
-            double original_risk = run_model(model, original_x);
+            auto original_pred = run_model_with_ood(model, original_x);
 
             json flipped_obj = features_obj;
             flipped_obj[flip_field] = flip_value;
             auto new_x = extract_features(model, flipped_obj);
-            double new_risk = run_model(model, new_x);
+            auto new_pred = run_model_with_ood(model, new_x);
+
+            // Counterfactual monotonicity / hallucination anomaly check
+            bool monotonic_violation = false;
+            std::string cf_warning = "";
+            double orig_val = features_obj.value(flip_field, 0.0);
+            if ((flip_field == "trestbps" || flip_field == "chol" || flip_field == "oldpeak" || flip_field == "avg_glucose_level" || flip_field == "bmi") &&
+                flip_value > orig_val && (new_pred.risk - original_pred.risk) < -0.05) {
+                monotonic_violation = true;
+                cf_warning = "Counterfactual anomaly: elevating risk factor paradoxically decreased risk by >5 percentage points.";
+            }
 
             json out = {
-                { "original_risk", original_risk },
-                { "new_risk", new_risk },
-                { "delta", new_risk - original_risk },
+                { "original_risk", original_pred.risk },
+                { "new_risk", new_pred.risk },
+                { "delta", new_pred.risk - original_pred.risk },
                 { "model_type", model.model_type },
+                { "monotonic_violation", monotonic_violation },
+                { "warning", cf_warning },
                 { "stateless", true }
             };
             res.set_content(out.dump(), "application/json");

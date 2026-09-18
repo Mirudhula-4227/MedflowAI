@@ -43,6 +43,7 @@ export function saveAssessmentToHistory(user, { features, result, answers }) {
       stroke_risk: result.stroke_risk,
       confidence: result.confidence || 'HIGH',
       ood_distance: result.ood_distance != null ? result.ood_distance : null,
+      hallucination_check: result.hallucination_check || null,
       source: result.source || 'live',
       features,
       answers: answers || {},

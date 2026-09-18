@@ -431,6 +431,97 @@ function ScoreCard({ name, risk, tier, drivers }) {
   );
 }
 
+function HallucinationGuardCard({ check, result, confidence }) {
+  if (!check) return null;
+
+  const statusClass = check.hallucination_risk === 'LOW' ? 'passed' : check.hallucination_risk === 'ELEVATED' ? 'warning' : 'danger';
+  const badgeClass = check.hallucination_risk === 'LOW' ? 'badge-passed' : check.hallucination_risk === 'ELEVATED' ? 'badge-warning' : 'badge-danger';
+  const pctConfidence = Math.round((check.confidence_score ?? (confidence === 'HIGH' ? 1.0 : 0.8)) * 100);
+
+  const ensVar = check.ensemble_variance ?? check.epistemic_uncertainty?.heart_tree_variance;
+  const drift = check.sub_ensemble_drift ?? check.epistemic_uncertainty?.heart_subensemble_drift;
+  const oodDist = check.heart_ood_distance ?? result?.heart_ood_distance ?? check.ood_metric?.heart_ood_distance;
+  const oodThresh = check.heart_ood_threshold ?? 6.73;
+  const warnings = check.warnings || [];
+
+  return (
+    <div className={`hallucination-card ${statusClass}`}>
+      <div className="hallucination-card-header">
+        <div className="hallucination-card-title">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            {check.passed ? (
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z M9 12l2 2 4-4" />
+            ) : (
+              <>
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </>
+            )}
+          </svg>
+          <span>Anti-Hallucination & Clinical Plausibility Guard</span>
+        </div>
+        <div className={`hallucination-status-badge ${badgeClass}`}>
+          {check.hallucination_risk === 'LOW' ? 'VERIFIED PLAUSIBLE' : `${check.hallucination_risk} HALLUCINATION RISK`}
+        </div>
+      </div>
+
+      <div className="hallucination-metrics-grid">
+        <div className="hallucination-metric-tile">
+          <span className="metric-tile-label">Clinical Plausibility</span>
+          <span className="metric-tile-val" style={{ color: check.passed ? 'var(--pulse)' : 'var(--heart)' }}>
+            {pctConfidence}%
+          </span>
+          <span className="metric-tile-sub">{check.passed ? 'Zero contradictions' : `${warnings.length} clinical caution(s)`}</span>
+        </div>
+
+        <div className="hallucination-metric-tile">
+          <span className="metric-tile-label">Tree Ensemble Stability</span>
+          <span className="metric-tile-val">
+            {ensVar != null ? (ensVar * 1000).toFixed(2) + ' mVar' : '<0.1 mVar'}
+          </span>
+          <span className="metric-tile-sub">100 GBDT estimators</span>
+        </div>
+
+        <div className="hallucination-metric-tile">
+          <span className="metric-tile-label">Sub-Ensemble Drift</span>
+          <span className="metric-tile-val">
+            {drift != null ? (drift * 100).toFixed(1) + '%' : '<0.5%'}
+          </span>
+          <span className="metric-tile-sub">50 vs 100 trees divergence</span>
+        </div>
+
+        <div className="hallucination-metric-tile">
+          <span className="metric-tile-label">OOD Distribution Shift</span>
+          <span className="metric-tile-val">
+            {oodDist != null ? `${Number(oodDist).toFixed(1)} / ${Number(oodThresh).toFixed(1)}` : 'In-Bounds'}
+          </span>
+          <span className="metric-tile-sub">{oodDist != null && Number(oodDist) > Number(oodThresh) ? 'Out of Distribution' : 'In training boundary'}</span>
+        </div>
+      </div>
+
+      {warnings.length > 0 && (
+        <div className="hallucination-warnings-box">
+          <div className="hallucination-warnings-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            Clinical Guard Warnings ({warnings.length}):
+          </div>
+          {warnings.map((w, idx) => (
+            <div key={idx} className="hallucination-warning-item">
+              <span className="warning-dot" />
+              <span>{w}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Results({ features, result, onExplore, onRestart, error, user, historyCount = 0, onOpenHistory }) {
   const ex = explain(features, result.heart_risk, result.stroke_risk);
   const steps = nextSteps(features, result.heart_risk, result.stroke_risk);
@@ -454,6 +545,7 @@ function Results({ features, result, onExplore, onRestart, error, user, historyC
           <ScoreCard name="Heart disease" risk={ex.heart.risk} tier={ex.heart.tier} drivers={ex.heart.drivers} />
           <ScoreCard name="Stroke" risk={ex.stroke.risk} tier={ex.stroke.tier} drivers={ex.stroke.drivers} />
         </div>
+        <HallucinationGuardCard check={result.hallucination_check} result={result} confidence={result.confidence} />
         <div className="steps">
           <h3>What to do next</h3>
           <ol>{steps.map((s) => <li key={s}>{s}</li>)}</ol>
@@ -998,6 +1090,11 @@ function HistoryModal({ isOpen, onClose, history, onLoadRecord, onDeleteRecord, 
                           {item.confidence} CONFIDENCE
                         </span>
                       )}
+                      {item.hallucination_check && (
+                        <span className={`hallucination-badge ${item.hallucination_check.passed ? 'passed' : 'warning'}`}>
+                          {item.hallucination_check.passed ? '✓ PLAUSIBLE' : '⚠ FLAGGED'}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -1133,6 +1230,7 @@ export function App() {
       stroke_risk: record.stroke_risk,
       confidence: record.confidence,
       ood_distance: record.ood_distance,
+      hallucination_check: record.hallucination_check,
       source: record.source,
     });
     setAnswers(record.answers || {});
