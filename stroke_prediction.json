@@ -8761,7 +8761,7 @@
     ]
   },
   "training_metadata": {
-    "created_at": "2026-09-18T18:56:43.288349+00:00",
+    "created_at": "2026-09-18T21:38:50.060416+00:00",
     "algorithm": "GradientBoostingClassifier",
     "source_sha256": "644d473b05d2797006bd94865e4f8bb057f0c721617911613c82c8fcfc707420",
     "provenance": {

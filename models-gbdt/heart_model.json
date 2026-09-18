@@ -8713,7 +8713,7 @@
     ]
   },
   "training_metadata": {
-    "created_at": "2026-09-18T18:56:31.794882+00:00",
+    "created_at": "2026-09-18T21:38:27.625932+00:00",
     "algorithm": "GradientBoostingClassifier",
     "source_sha256": "ddb2996b2f4db2e00aad13f4518200179ff69f79093838e3c21ffa672ebec0f1",
     "provenance": {
