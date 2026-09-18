@@ -71,7 +71,6 @@ flowchart TB
 
 ---
 
-<<<<<<< HEAD
 ### 2. The Native C++ Inference Server (`server.cpp`)
 - **Header-Only Dependencies**: Built using [`cpp-httplib`](httplib.h) for cross-platform HTTP networking and [`nlohmann/json`](json.hpp) for fast JSON parsing.
 - **In-Memory Model Representation**:
@@ -82,39 +81,27 @@ flowchart TB
       std::string activation;             // "relu" or "sigmoid"
   };
   ```
-- **Forward Pass (`run_mlp`)**:
+- **Forward Pass (`run_mlp_with_ood`)**:
   1. **StandardScaler**: $z_i = \frac{x_i - \mu_i}{\sigma_i}$
-  2. **Hidden Layer 1**: $h_1 = \text{ReLU}(W_1 z + b_1)$
-  3. **Hidden Layer 2**: $h_2 = \text{ReLU}(W_2 h_1 + b_2)$
-  4. **Output Layer**: $p = \sigma(W_3 h_2 + b_3) = \frac{1}{1 + e^{-\text{logit}}}$
-- **Latency**: Runs in **$< 1\text{ ms}$** per evaluation with no Python GIL, runtime interpreter, or heavy ML frameworks.
-=======
-## Model Cards
+  2. **OOD Detection (in-stride)**: $D_{\text{std}} = \sqrt{\sum z_i^2} \implies \text{flag if } D_{\text{std}} > \text{threshold}$
+  3. **Hidden Layer 1**: $h_1 = \text{ReLU}(W_1 z + b_1)$
+  4. **Hidden Layer 2**: $h_2 = \text{ReLU}(W_2 h_1 + b_2)$
+  5. **Output Layer**: $p = \sigma(W_3 h_2 + b_3) = \frac{1}{1 + e^{-\text{logit}}}$
+- **Latency & Throughput**: Sub-millisecond ($< 1\text{ ms}$) evaluation with zero Python runtime dependency, zero disk writes, and sliding-window rate limiting.
 
-### 🫀 Heart Disease Model
-| Property | Value |
-|---|---|
-| Dataset | Heart Disease (1,025 rows) |
-| Features | 13 (age, sex, cp, trestbps, chol, fbs, restecg, thalach, exang, oldpeak, slope, ca, thal) |
-| Architecture | `13 → 64 → 32 → 1` |
-| Activation | ReLU (hidden) · Sigmoid (output) |
-| Optimizer | Adam · lr=0.01 · α=0.01 |
-| **Test Accuracy** | **96.1%** |
-| Precision / Recall | 0.96 / 0.96 (both classes) |
-| Export | `heart_model.json` |
+### 📊 Validated Model Performance (Held-Out Test Sets)
 
-### 🧠 Stroke Prediction Model
-| Property | Value |
-|---|---|
-| Dataset | Stroke Dataset (5,110 rows) |
-| Features | 15 (age, hypertension, heart_disease, glucose, BMI + encoded categoricals) |
-| Class Imbalance | 19.5 : 1 (no-stroke : stroke) → fixed with sample_weight |
-| Architecture | `15 → 64 → 32 → 1` |
-| Activation | ReLU (hidden) · Sigmoid (output) |
-| Tuning Metric | F1 (not accuracy — data is imbalanced) |
-| **Stroke Recall** | **80%** (catches 4 in 5 real stroke cases) |
-| Export | `stroke_prediction.json` |
->>>>>>> c91f14845e0b5e84f62e1a8b5f34c9441eb8eb7b
+| Property | 🫀 Heart Disease Model | 🧠 Stroke Prediction Model |
+|---|---|---|
+| **Dataset** | UCI Heart Disease (1,025 rows) | Healthcare Stroke Dataset (5,110 rows) |
+| **Features** | 13 physiological vitals | 15 demographic & metabolic metrics |
+| **Architecture** | `13 → 32 → 16 → 1` (MLP, ReLU) | `15 → 64 → 32 → 1` (MLP, ReLU) |
+| **Calibration** | Temperature Scaling ($T=2.0$) | Standard Sigmoid ($T=1.0$) |
+| **Test Accuracy** | **94.6%** ($N=205$) | **70.0%** ($N=1,022$) |
+| **Precision** | **92.4%** | **11.9%** (low-prevalence screening) |
+| **Recall (Sensitivity)** | **97.0%** (catches 97 in 100 cases) | **80.0%** (catches 4 in 5 stroke cases) |
+| **ROC-AUC** | **0.982** | **0.814** |
+| **Export File** | [`heart_model.json`](heart_model.json) | [`stroke_prediction.json`](stroke_prediction.json) |
 
 ---
 
@@ -247,6 +234,33 @@ Invoke-WebRequest -Uri "http://localhost:8080/predict" -Method POST -ContentType
 $cf = '{"features":{"age":55,"sex":1,"cp":0,"trestbps":130,"chol":220,"fbs":0,"restecg":0,"thalach":150,"exang":1,"oldpeak":2.8,"slope":1,"ca":3,"thal":2,"gender":1,"hypertension":0,"heart_disease":0,"ever_married":1,"Residence_type":1,"avg_glucose_level":90,"bmi":26,"work_type_Never_worked":0,"work_type_Private":1,"work_type_Self-employed":0,"work_type_children":0,"smoking_status_formerly smoked":0,"smoking_status_never smoked":1,"smoking_status_smokes":0},"model":"heart","flip_field":"oldpeak","flip_value":0.0}';
 Invoke-WebRequest -Uri "http://localhost:8080/counterfactual" -Method POST -ContentType "application/json" -Body $cf | Select-Object -ExpandProperty Content
 ```
+
+---
+
+## 🔒 Security, Privacy & Data Minimization
+
+MedflowAI adheres strictly to healthcare Privacy-by-Design principles:
+
+1. **Zero-Persistence Data Minimization**:
+   - **Stateless Architecture**: MedflowAI never writes patient vitals, responses, or predicted risk scores to disk or databases. All inference operations execute strictly in-memory during the active HTTP request lifecycle.
+   - **Ephemeral Client State**: All form answers are stored in volatile React state in browser memory. Refreshing or closing the tab immediately purges all entered data.
+
+2. **Decoupled Identity & Zero PII Coupling**:
+   - The clinical assessment form **never asks for** Patient Name, Email, Phone Number, Social Security Number, Date of Birth, or Address.
+   - Every browser session generates a cryptographic anonymous token (`crypto.randomUUID()`) passed via the `X-Session-ID` header. Even if server traffic were intercepted, clinical answers cannot be attributed to a real-world identity.
+
+3. **Privacy-Safe Audit Logging**:
+   - The C++ server logging middleware strictly records request metadata (`HTTP Method`, `Path`, `Status`, `Latency`, `Anonymous Session ID`).
+   - **Zero Plaintext Health Logging**: Request bodies, patient vitals, and prediction probabilities are strictly barred from server logs, stdout, and crash reports.
+
+4. **API Hardening, Sanitization & Rate Limiting**:
+   - **Physiological Bounds Validation**: The C++ server enforces physiological limits on all numerical inputs (e.g. $1 \le \text{age} \le 125$, $50 \le \text{BP} \le 260$, $60 \le \text{Chol} \le 650$) and ensures all inputs are finite numbers, rejecting injection attacks and corrupted payloads with HTTP 400.
+   - **Sliding-Window Rate Limiting**: A thread-safe in-memory rate limiter caps requests at 60 req/min per IP to protect the inference engine from scraping and denial-of-service.
+   - **Security Headers**: Transmits `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`, and `X-Frame-Options: DENY`.
+
+5. **Encryption in Transit & At Rest**:
+   - All network traffic is designed to route over **HTTPS/TLS**. For local demonstrations, `cpp-httplib` integrates with OpenSSL or runs behind a local Caddy/Nginx reverse proxy.
+   - By enforcing zero persistence, there is no unencrypted data-at-rest attack surface.
 
 ---
 

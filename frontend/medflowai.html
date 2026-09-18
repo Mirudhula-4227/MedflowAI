@@ -1289,13 +1289,22 @@ const API_BASE =
 
 const REQUEST_TIMEOUT_MS = 6000;
 
+// Ephemeral Anonymous Session ID: Decoupled from personal identity (Zero PII storage)
+const ANONYMOUS_SESSION_ID =
+  typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : 'sess_' + Math.random().toString(36).slice(2, 11);
+
 async function post(path, body) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), REQUEST_TIMEOUT_MS);
   try {
     const res = await fetch(API_BASE + path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-ID': ANONYMOUS_SESSION_ID,
+      },
       body: JSON.stringify(body),
       signal: ctl.signal,
     });
