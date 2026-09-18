@@ -138,16 +138,40 @@ flowchart TB
 
 ---
 
-### 5. Client Authentication & PDF Export
+### 5. Anti-Hallucination & Clinical Plausibility Verification System
+To protect clinicians and patients from model hallucinations, ungrounded extrapolations, and paradoxical predictions, MedflowAI implements a 4-pillar safety and verification layer inside the C++ engine:
+
+1. **Epistemic Uncertainty & Ensemble Stability**:
+   Measures inter-tree variance across all 100 GBDT estimators:
+   $$\sigma_{\text{trees}}^2 = \frac{1}{M} \sum_{m=1}^{M} \left( P_m(x) - \bar{P}(x) \right)^2$$
+   Additionally tracks sub-ensemble drift between the partial 50-tree prediction and the full 100-tree model. High divergence ($> 22\%$) triggers an ensemble instability alert.
+
+2. **Physiological Consistency & Contradiction Detection**:
+   Evaluates hard medical boundary rules to detect contradictory predictions:
+   - *Severe Coronary Calcification / Ischemia*: If fluoroscopy calcification `ca >= 2` or ST depression `oldpeak >= 2.5 mm`, predicted cardiac risk must not paradoxically fall into low bands ($< 32\%$).
+   - *Multi-Morbidity Stroke Contradiction*: An elderly patient ($\ge 65$) with diagnosed hypertension, preexisting heart disease, and hyperglycemia ($\ge 180\text{ mg/dL}$) cannot receive a paradoxical near-zero stroke probability ($< 6\%$).
+   - *Early Onset Anomaly*: Flagged when extreme coronary pathology (`ca >= 2`) is reported in adolescent or young adult profiles ($< 26$ years).
+
+3. **Out-of-Distribution (OOD) Extrapolation Boundary**:
+   Calculates standardized feature Euclidean distance from the clinical cohort centroid. Inputs exceeding $1.35 \times$ the training threshold trigger an explicit extrapolation alert, degrading model confidence score to $0.25$.
+
+4. **Counterfactual Monotonicity Violation Detection**:
+   In `/counterfactual`, strictly checks that worsening an inherently harmful risk factor (e.g., elevating resting blood pressure, total cholesterol, or glucose) does not paradoxically decrease predicted risk by $> 5\%$.
+
+In the frontend, a dedicated **"Anti-Hallucination & Clinical Plausibility Guard"** card surfaces real-time validation badges (`VERIFIED PLAUSIBLE` vs `FLAGGED`), ensemble stability metrics, and itemized clinical caution warnings.
+
+---
+
+### 6. Client Authentication & PDF Export
 - **User Authentication (`userStorage.js`)**: Supports multi-user sign-in and registration with hashed password handling in local storage.
 - **PDF Clinical Summary (`pdf.js`)**: 1-click generation of formatted clinical summary documents summarizing cardiac and stroke risk tiers, primary clinical drivers, tailored next steps, and patient details.
 
 ---
 
-### 6. API Contract & Endpoints
+### 7. API Contract & Endpoints
 
 #### `POST /predict`
-Runs inference across both heart and stroke models simultaneously.
+Runs inference across both heart and stroke models simultaneously with anti-hallucination verification.
 - **Request Body**:
   ```json
   {
@@ -175,7 +199,20 @@ Runs inference across both heart and stroke models simultaneously.
     "stroke_ood_distance": 2.616,
     "heart_model_type": "gradient_boosted_trees",
     "stroke_model_type": "gradient_boosted_trees",
-    "stateless": true
+    "stateless": true,
+    "hallucination_check": {
+      "passed": true,
+      "hallucination_risk": "LOW",
+      "confidence_score": 1.0,
+      "ensemble_variance": 0.000105,
+      "sub_ensemble_drift": 0.0028,
+      "heart_ood_distance": 3.5,
+      "heart_ood_threshold": 6.36,
+      "stroke_ood_distance": 2.62,
+      "stroke_ood_threshold": 6.83,
+      "warnings": [],
+      "clinical_sanity_verified": true
+    }
   }
   ```
 
