@@ -3,6 +3,8 @@ import { encodeFeatures, assertValidFeatures } from './lib/encoder.js';
 import { QUESTIONS, SECTIONS, SAMPLE_ANSWERS } from './lib/questions.js';
 import { predict, counterfactual, API_BASE } from './lib/api.js';
 import { tierFor, overallTier, pct, explain, nextSteps, LEVERS } from './lib/risk.js';
+import { currentUser, loadAssessment, register, saveAssessment, signIn, signOut } from './lib/userStorage.js';
+import { downloadPredictionSummary } from './lib/pdf.js';
 
 const TONE = { neutral: 'var(--brand)', heart: 'var(--heart)', stroke: 'var(--stroke)' };
 
@@ -58,36 +60,34 @@ function Shell({ children, source, user, onSignOut }) {
 
 /* ============================ login ============================ */
 
-/* Demo credentials — swap for a real auth call in production. */
-const DEMO_USERS = [
-  { email: 'doctor@medflowai.com', password: 'heart2024', name: 'Dr. Ananya Krishnan' },
-  { email: 'demo@medflowai.com', password: 'demo', name: 'Demo User' },
-];
-
 export function Login({ onLogin }) {
-  const [email, setEmail] = useState('');
+  const [mode, setMode]         = useState('signin');
+  const [name, setName]         = useState('');
+  const [email, setEmail]       = useState('');
   const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-  const [showPw, setShowPw] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [busy, setBusy]         = useState(false);
+  const [err, setErr]           = useState('');
+  const [showPw, setShowPw]     = useState(false);
 
   const attempt = async (e) => {
     e.preventDefault();
     setErr('');
+    if (mode === 'register' && !name.trim()) { setErr('Enter your name.'); return; }
     if (!email.trim()) { setErr('Enter your email address.'); return; }
-    if (!password) { setErr('Enter your password.'); return; }
+    if (!password)     { setErr('Enter your password.'); return; }
+    if (mode === 'register' && password.length < 8) { setErr('Use at least 8 characters for your password.'); return; }
+    if (mode === 'register' && password !== confirmPassword) { setErr('Passwords do not match.'); return; }
     setBusy(true);
-    await new Promise((r) => setTimeout(r, 600));
-    const match = DEMO_USERS.find(
-      (u) =>
-        u.email.toLowerCase() === email.trim().toLowerCase() &&
-        u.password === password,
-    );
-    setBusy(false);
-    if (match) {
-      onLogin(match.name);
-    } else {
-      setErr('Email or password is incorrect. Try demo@medflowai.com / demo.');
+    try {
+      const user = mode === 'register'
+        ? await register({ name, email, password })
+        : await signIn(email, password);
+      onLogin(user);
+    } catch (error) {
+      setErr(error.message || 'Unable to sign in.');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -117,14 +117,21 @@ export function Login({ onLogin }) {
       {/* right form */}
       <div className="login-form-side">
         <Mark />
-        <h2>Welcome back</h2>
-        <p className="sub">Sign in to your account to continue.</p>
+        <h2>{mode === 'register' ? 'Create your account' : 'Welcome back'}</h2>
+        <p className="sub">{mode === 'register' ? 'Your assessments will be saved to this account on this browser.' : 'Sign in to continue where you left off.'}</p>
 
         <form onSubmit={attempt} noValidate>
           <div className="login-fields">
             {err && (
               <div className="login-err" role="alert">
                 {err}
+              </div>
+            )}
+
+            {mode === 'register' && (
+              <div className="field-wrap">
+                <label htmlFor="lf-name">Name</label>
+                <input id="lf-name" autoComplete="name" value={name} onChange={(e) => { setName(e.target.value); setErr(''); }} />
               </div>
             )}
 
@@ -169,27 +176,21 @@ export function Login({ onLogin }) {
               </div>
             </div>
 
+            {mode === 'register' && (
+              <div className="field-wrap">
+                <label htmlFor="lf-confirm">Confirm password</label>
+                <input id="lf-confirm" type="password" autoComplete="new-password" value={confirmPassword} onChange={(e) => { setConfirmPassword(e.target.value); setErr(''); }} />
+              </div>
+            )}
+
             <button type="submit" className="btn login-btn" disabled={busy}>
-              {busy ? 'Signing in…' : 'Sign in'}
+              {busy ? 'Saving…' : mode === 'register' ? 'Create account' : 'Sign in'}
             </button>
           </div>
         </form>
 
-        <div className="login-divider">or</div>
-        <button className="btn btn-guest" onClick={() => onLogin('Guest')}>
-          Continue as guest
-        </button>
-
         <p className="login-footer">
-          Demo credentials:{' '}
-          <strong style={{ color: 'var(--shell-ink)' }}>demo@medflowai.com</strong> /{' '}
-          <strong style={{ color: 'var(--shell-ink)' }}>demo</strong>
-          <br />
-          No account?{' '}
-          <a href="#" onClick={(e) => { e.preventDefault(); onLogin('New User'); }}>
-            Create one
-          </a>{' '}
-          — or just use guest mode above.
+          {mode === 'signin' ? <><span>Demo: </span><strong style={{ color: 'var(--shell-ink)' }}>demo@medflowai.com</strong> / <strong style={{ color: 'var(--shell-ink)' }}>demo</strong><br />New here? <a href="#" onClick={(e) => { e.preventDefault(); setMode('register'); setErr(''); }}>Create an account</a>.</> : <>Already have an account? <a href="#" onClick={(e) => { e.preventDefault(); setMode('signin'); setErr(''); }}>Sign in</a>.</>}
         </p>
       </div>
     </div>
@@ -405,7 +406,7 @@ function ScoreCard({ name, risk, tier, drivers }) {
   );
 }
 
-function Results({ features, result, onExplore, onRestart, error }) {
+function Results({ features, result, onExplore, onRestart, error, user }) {
   const ex = explain(features, result.heart_risk, result.stroke_risk);
   const steps = nextSteps(features, result.heart_risk, result.stroke_risk);
   const tier = overallTier(result.heart_risk, result.stroke_risk);
@@ -438,6 +439,17 @@ function Results({ features, result, onExplore, onRestart, error }) {
         </details>
         <div className="actions">
           <button className="btn" onClick={onExplore}>Try changing one thing</button>
+          <button
+            className="btn ghost"
+            onClick={() => downloadPredictionSummary({
+              user,
+              heart: { riskPercent: pct(ex.heart.risk), tier: ex.heart.tier.label, drivers: ex.heart.drivers },
+              stroke: { riskPercent: pct(ex.stroke.risk), tier: ex.stroke.tier.label, drivers: ex.stroke.drivers },
+              steps,
+            })}
+          >
+            Download PDF summary
+          </button>
           <button className="btn ghost" onClick={onRestart}>Start over</button>
         </div>
         {result.source === 'mock' && (
@@ -556,16 +568,31 @@ function Counterfactual({ features, baseline, onBack }) {
 /* ============================ app ============================ */
 
 export function App() {
-  const [user, setUser] = useState(null);
-  const [screen, setScreen] = useState('landing');
-  const [index, setIndex] = useState(0);
-  const [answers, setAnswers] = useState({});
-  const [result, setResult] = useState(null);
-  const [features, setFeatures] = useState(null);
-  const [error, setError] = useState(null);
+  const [user, setUser]         = useState(() => currentUser());
+  const saved = user ? loadAssessment(user.id) : null;
+  const [screen, setScreen]     = useState(() => saved?.screen || 'landing');
+  const [index, setIndex]       = useState(() => saved?.index || 0);
+  const [answers, setAnswers]   = useState(() => saved?.answers || {});
+  const [result, setResult]     = useState(() => saved?.result || null);
+  const [features, setFeatures] = useState(() => saved?.features || null);
+  const [error, setError]       = useState(() => saved?.error || null);
 
-  const handleLogin = (name) => { setUser(name); setScreen('landing'); };
+  useEffect(() => {
+    if (user) saveAssessment(user.id, { screen, index, answers, result, features, error });
+  }, [user, screen, index, answers, result, features, error]);
+
+  const handleLogin = (nextUser) => {
+    const assessment = loadAssessment(nextUser.id);
+    setUser(nextUser);
+    setScreen(assessment?.screen || 'landing');
+    setIndex(assessment?.index || 0);
+    setAnswers(assessment?.answers || {});
+    setResult(assessment?.result || null);
+    setFeatures(assessment?.features || null);
+    setError(assessment?.error || null);
+  };
   const handleSignOut = () => {
+    signOut();
     setUser(null);
     setAnswers({}); setIndex(0); setResult(null); setFeatures(null); setError(null);
     setScreen('landing');
@@ -595,7 +622,7 @@ export function App() {
   const back = () => { if (index === 0) setScreen('landing'); else setIndex((i) => i - 1); };
   const restart = () => { setAnswers({}); setIndex(0); setResult(null); setFeatures(null); setError(null); setScreen('landing'); };
 
-  const shellProps = { user, onSignOut: handleSignOut };
+  const shellProps = { user: user.name, onSignOut: handleSignOut };
 
   if (screen === 'landing')
     return <Shell {...shellProps}><Landing onStart={() => { setIndex(0); setScreen('form'); }} onSample={() => { setAnswers(SAMPLE_ANSWERS); submit(SAMPLE_ANSWERS); }} /></Shell>;
@@ -607,7 +634,7 @@ export function App() {
     return <Shell {...shellProps}><LoadingScreen /></Shell>;
 
   if (screen === 'results')
-    return <Shell source={result?.source} {...shellProps}><Results features={features} result={result} error={error} onExplore={() => setScreen('cf')} onRestart={restart} /></Shell>;
+    return <Shell source={result?.source} {...shellProps}><Results features={features} result={result} error={error} user={user.name} onExplore={() => setScreen('cf')} onRestart={restart} /></Shell>;
 
   return <Shell source={result?.source} {...shellProps}><Counterfactual features={features} baseline={result} onBack={() => setScreen('results')} /></Shell>;
 }
