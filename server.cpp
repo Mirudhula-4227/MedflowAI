@@ -47,6 +47,40 @@ struct MLPModel {
     double ood_threshold;               // Distance threshold for OOD flagging
 };
 
+// Tree structure for Gradient Boosted Decision Trees (GBDT)
+struct Tree {
+    std::vector<int> left;
+    std::vector<int> right;
+    std::vector<int> feature;
+    std::vector<double> threshold;
+    std::vector<double> value;
+};
+
+struct GBDTModel {
+    std::vector<std::string> feature_names;
+    double decision_threshold = 0.5;
+    double base_logit = 0.0;
+    double learning_rate = 0.1;
+    std::vector<Tree> trees;
+    std::vector<double> imputer_values;
+    std::vector<double> ood_mean;
+    std::vector<double> ood_scale;
+    double ood_threshold = 7.0;
+};
+
+enum class ModelArchitecture {
+    MLP,
+    GBDT
+};
+
+struct UnifiedModel {
+    ModelArchitecture arch = ModelArchitecture::MLP;
+    std::string model_type = "mlp_relu"; // "mlp_relu" or "gradient_boosted_trees"
+    std::vector<std::string> feature_names;
+    MLPModel mlp;
+    GBDTModel gbdt;
+};
+
 struct Prediction {
     double risk;
     double ood_distance;
@@ -57,10 +91,7 @@ static double relu(double x) { return x > 0.0 ? x : 0.0; }
 static double sigmoid(double x) { return 1.0 / (1.0 + std::exp(-x)); }
 
 // Forward pass through MLP given raw features.
-// Standardizes: z = (x - mu) / sigma.
-// Also computes standardized Euclidean distance D_std = sqrt(sum(z_i^2)) for OOD check with zero extra allocation.
 static Prediction run_mlp_with_ood(const MLPModel& m, const std::vector<double>& raw_features) {
-    // 1. Standardize and compute OOD distance
     std::vector<double> x(raw_features.size());
     double sum_sq = 0.0;
     for (size_t i = 0; i < raw_features.size(); ++i) {
@@ -73,7 +104,6 @@ static Prediction run_mlp_with_ood(const MLPModel& m, const std::vector<double>&
     double ood_dist = std::sqrt(sum_sq);
     bool is_ood = (ood_dist > m.ood_threshold);
 
-    // 2. Forward through layers
     std::vector<double> current = x;
     for (const auto& layer : m.layers) {
         std::vector<double> next(layer.W.size(), 0.0);
@@ -101,12 +131,51 @@ static Prediction run_mlp_with_ood(const MLPModel& m, const std::vector<double>&
     return { risk, ood_dist, is_ood };
 }
 
-static double run_mlp(const MLPModel& m, const std::vector<double>& raw_features) {
-    return run_mlp_with_ood(m, raw_features).risk;
+// Forward pass through GBDT with Platt calibration and in-stride OOD check.
+static Prediction run_gbdt_with_ood(const GBDTModel& m, const std::vector<double>& raw_features) {
+    double sum_sq = 0.0;
+    for (size_t i = 0; i < raw_features.size(); ++i) {
+        double s = (i < m.ood_scale.size() && m.ood_scale[i] != 0.0) ? m.ood_scale[i] : 1.0;
+        double mu = (i < m.ood_mean.size()) ? m.ood_mean[i] : 0.0;
+        double zi = (raw_features[i] - mu) / s;
+        sum_sq += zi * zi;
+    }
+    double ood_dist = std::sqrt(sum_sq);
+    bool is_ood = (ood_dist > m.ood_threshold);
+
+    double sum_tree_values = 0.0;
+    for (const auto& tree : m.trees) {
+        int node = 0;
+        while (tree.left[node] != -1) {
+            int feat = tree.feature[node];
+            double val = raw_features[feat];
+            if (val <= tree.threshold[node]) {
+                node = tree.left[node];
+            } else {
+                node = tree.right[node];
+            }
+        }
+        sum_tree_values += tree.value[node];
+    }
+    double logit = m.base_logit + m.learning_rate * sum_tree_values;
+    double risk = sigmoid(logit);
+    return { risk, ood_dist, is_ood };
 }
 
-// Load model file (heart_model.json / stroke_prediction.json)
-static MLPModel load_model(const std::string& path, double default_ood_thresh = 7.0) {
+static Prediction run_model_with_ood(const UnifiedModel& m, const std::vector<double>& raw_features) {
+    if (m.arch == ModelArchitecture::GBDT) {
+        return run_gbdt_with_ood(m.gbdt, raw_features);
+    } else {
+        return run_mlp_with_ood(m.mlp, raw_features);
+    }
+}
+
+static double run_model(const UnifiedModel& m, const std::vector<double>& raw_features) {
+    return run_model_with_ood(m, raw_features).risk;
+}
+
+// Load model file (heart_model.json / stroke_prediction.json), auto-detecting MLP or GBDT
+static UnifiedModel load_model(const std::string& path, double default_ood_thresh = 7.0) {
     std::ifstream f(path);
     if (!f.is_open()) {
         std::cerr << "FATAL: could not open " << path << std::endl;
@@ -115,35 +184,77 @@ static MLPModel load_model(const std::string& path, double default_ood_thresh = 
     json j;
     f >> j;
 
-    MLPModel m;
-    m.feature_names = j.at("feature_names").get<std::vector<std::string>>();
+    UnifiedModel um;
+    std::string m_str = j.value("model", "mlp_relu");
 
-    const auto& scaler = j.at("scaler");
-    m.mean = scaler.at("mean").get<std::vector<double>>();
-    m.scale = scaler.at("scale").get<std::vector<double>>();
-    m.ood_threshold = j.value("ood_threshold", default_ood_thresh);
+    if (m_str == "gradient_boosted_trees") {
+        um.arch = ModelArchitecture::GBDT;
+        um.model_type = "gradient_boosted_trees";
+        um.feature_names = j.at("feature_names").get<std::vector<std::string>>();
+        um.gbdt.feature_names = um.feature_names;
+        um.gbdt.decision_threshold = j.value("decision_threshold", 0.5);
+        um.gbdt.base_logit = j.at("base_logit").get<double>();
+        um.gbdt.learning_rate = j.at("learning_rate").get<double>();
 
-    for (const auto& jl : j.at("layers")) {
-        Layer layer;
-        layer.activation = jl.at("activation").get<std::string>();
-        layer.W = jl.at("W").get<std::vector<std::vector<double>>>();
-
-        const auto& jb = jl.at("b");
-        if (jb.is_array()) {
-            layer.b = jb.get<std::vector<double>>();
+        if (j.contains("ood")) {
+            const auto& j_ood = j.at("ood");
+            um.gbdt.ood_mean = j_ood.at("mean").get<std::vector<double>>();
+            um.gbdt.ood_scale = j_ood.at("scale").get<std::vector<double>>();
+            um.gbdt.ood_threshold = j_ood.value("threshold", default_ood_thresh);
         } else {
-            layer.b = { jb.get<double>() };
+            um.gbdt.ood_threshold = default_ood_thresh;
         }
-        m.layers.push_back(std::move(layer));
+
+        if (j.contains("imputer") && j.at("imputer").contains("values")) {
+            um.gbdt.imputer_values = j.at("imputer").at("values").get<std::vector<double>>();
+        }
+
+        for (const auto& jt : j.at("trees")) {
+            Tree t;
+            t.left = jt.at("left").get<std::vector<int>>();
+            t.right = jt.at("right").get<std::vector<int>>();
+            t.feature = jt.at("feature").get<std::vector<int>>();
+            t.threshold = jt.at("threshold").get<std::vector<double>>();
+            t.value = jt.at("value").get<std::vector<double>>();
+            um.gbdt.trees.push_back(std::move(t));
+        }
+
+        std::cout << "[INIT] Loaded GBDT " << path << " (" << um.feature_names.size()
+                  << " features, " << um.gbdt.trees.size() << " trees, OOD threshold=" << um.gbdt.ood_threshold << ")" << std::endl;
+    } else {
+        um.arch = ModelArchitecture::MLP;
+        um.model_type = "mlp_relu";
+        um.feature_names = j.at("feature_names").get<std::vector<std::string>>();
+        um.mlp.feature_names = um.feature_names;
+
+        const auto& scaler = j.at("scaler");
+        um.mlp.mean = scaler.at("mean").get<std::vector<double>>();
+        um.mlp.scale = scaler.at("scale").get<std::vector<double>>();
+        um.mlp.ood_threshold = j.value("ood_threshold", default_ood_thresh);
+
+        for (const auto& jl : j.at("layers")) {
+            Layer layer;
+            layer.activation = jl.at("activation").get<std::string>();
+            layer.W = jl.at("W").get<std::vector<std::vector<double>>>();
+
+            const auto& jb = jl.at("b");
+            if (jb.is_array()) {
+                layer.b = jb.get<std::vector<double>>();
+            } else {
+                layer.b = { jb.get<double>() };
+            }
+            um.mlp.layers.push_back(std::move(layer));
+        }
+
+        std::cout << "[INIT] Loaded MLP " << path << " (" << um.feature_names.size()
+                  << " features, " << um.mlp.layers.size() << " layers, OOD threshold=" << um.mlp.ood_threshold << ")" << std::endl;
     }
 
-    std::cout << "[INIT] Loaded " << path << " (" << m.feature_names.size()
-              << " features, " << m.layers.size() << " layers, OOD threshold=" << m.ood_threshold << ")" << std::endl;
-    return m;
+    return um;
 }
 
 // Build ordered feature vector from JSON object
-static std::vector<double> extract_features(const MLPModel& m, const json& features_obj) {
+static std::vector<double> extract_features(const UnifiedModel& m, const json& features_obj) {
     std::vector<double> out;
     out.reserve(m.feature_names.size());
     for (const auto& name : m.feature_names) {
@@ -227,10 +338,11 @@ public:
 };
 
 int main() {
-    // Calibrated OOD thresholds from ood_detector.py
-    MLPModel heart_model = load_model("heart_model.json", 6.73);
-    MLPModel stroke_model = load_model("stroke_prediction.json", 7.46);
-    std::cout << "[INIT] MedflowAI stateless inference engine ready." << std::endl;
+    // Auto-detect and load models (GBDT or MLP) with calibrated OOD thresholds
+    UnifiedModel heart_model = load_model("heart_model.json", 6.73);
+    UnifiedModel stroke_model = load_model("stroke_prediction.json", 7.46);
+    std::cout << "[INIT] MedflowAI stateless inference engine ready ("
+              << heart_model.model_type << " + " << stroke_model.model_type << ")." << std::endl;
 
     httplib::Server svr;
     SimpleRateLimiter rate_limiter(60, 60); // 60 requests per minute per client IP
@@ -292,8 +404,8 @@ int main() {
             auto heart_x = extract_features(heart_model, features_obj);
             auto stroke_x = extract_features(stroke_model, features_obj);
 
-            auto heart_pred = run_mlp_with_ood(heart_model, heart_x);
-            auto stroke_pred = run_mlp_with_ood(stroke_model, stroke_x);
+            auto heart_pred = run_model_with_ood(heart_model, heart_x);
+            auto stroke_pred = run_model_with_ood(stroke_model, stroke_x);
 
             std::string confidence = (heart_pred.is_ood || stroke_pred.is_ood) ? "LOW" : "HIGH";
 
@@ -305,6 +417,8 @@ int main() {
                 { "stroke_ood", stroke_pred.is_ood },
                 { "heart_ood_distance", round(heart_pred.ood_distance * 1000.0) / 1000.0 },
                 { "stroke_ood_distance", round(stroke_pred.ood_distance * 1000.0) / 1000.0 },
+                { "heart_model_type", heart_model.model_type },
+                { "stroke_model_type", stroke_model.model_type },
                 { "stateless", true }
             };
             res.set_content(out.dump(), "application/json");
@@ -338,20 +452,21 @@ int main() {
                 return;
             }
 
-            MLPModel& model = (model_name == "heart") ? heart_model : stroke_model;
+            UnifiedModel& model = (model_name == "heart") ? heart_model : stroke_model;
 
             auto original_x = extract_features(model, features_obj);
-            double original_risk = run_mlp(model, original_x);
+            double original_risk = run_model(model, original_x);
 
             json flipped_obj = features_obj;
             flipped_obj[flip_field] = flip_value;
             auto new_x = extract_features(model, flipped_obj);
-            double new_risk = run_mlp(model, new_x);
+            double new_risk = run_model(model, new_x);
 
             json out = {
                 { "original_risk", original_risk },
                 { "new_risk", new_risk },
                 { "delta", new_risk - original_risk },
+                { "model_type", model.model_type },
                 { "stateless", true }
             };
             res.set_content(out.dump(), "application/json");
