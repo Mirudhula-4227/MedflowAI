@@ -61,21 +61,21 @@ function Shell({ children, source, user, onSignOut }) {
 /* Demo credentials — swap for a real auth call in production. */
 const DEMO_USERS = [
   { email: 'doctor@medflowai.com', password: 'heart2024', name: 'Dr. Ananya Krishnan' },
-  { email: 'demo@medflowai.com',   password: 'demo',       name: 'Demo User' },
+  { email: 'demo@medflowai.com', password: 'demo', name: 'Demo User' },
 ];
 
 export function Login({ onLogin }) {
-  const [email, setEmail]       = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [busy, setBusy]         = useState(false);
-  const [err, setErr]           = useState('');
-  const [showPw, setShowPw]     = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [showPw, setShowPw] = useState(false);
 
   const attempt = async (e) => {
     e.preventDefault();
     setErr('');
     if (!email.trim()) { setErr('Enter your email address.'); return; }
-    if (!password)     { setErr('Enter your password.'); return; }
+    if (!password) { setErr('Enter your password.'); return; }
     setBusy(true);
     await new Promise((r) => setTimeout(r, 600));
     const match = DEMO_USERS.find(
@@ -413,8 +413,8 @@ function Results({ features, result, onExplore, onRestart, error }) {
     tier.key === 'high'
       ? 'Both numbers are worth a conversation with a doctor soon.'
       : tier.key === 'moderate'
-      ? 'Nothing urgent, but there is room to move these numbers down.'
-      : 'Your answers put you in the low band on both models.';
+        ? 'Nothing urgent, but there is room to move these numbers down.'
+        : 'Your answers put you in the low band on both models.';
 
   return (
     <div className="col wide">
@@ -497,18 +497,18 @@ function Counterfactual({ features, baseline, onBack }) {
   }, [value]);
 
   const original = cf ? cf.original_risk : baseline[lever.model === 'heart' ? 'heart_risk' : 'stroke_risk'];
-  const updated  = cf ? cf.new_risk : original;
-  const delta    = updated - original;
+  const updated = cf ? cf.new_risk : original;
+  const delta = updated - original;
   const startValue = Number(features[lever.field]);
   const moved = Math.abs(value - startValue) > 1e-9;
 
   const sentence = !moved
     ? `Drag the slider to see what happens to your ${lever.model} risk.`
     : delta < -0.005
-    ? `Dropping ${lever.label.toLowerCase()} to ${value}${lever.unit ? ' ' + lever.unit : ''} takes your ${lever.model} risk down by ${(Math.abs(delta) * 100).toFixed(1)} points.`
-    : delta > 0.005
-    ? `Moving ${lever.label.toLowerCase()} to ${value}${lever.unit ? ' ' + lever.unit : ''} pushes your ${lever.model} risk up by ${(delta * 100).toFixed(1)} points.`
-    : `Changing ${lever.label.toLowerCase()} on its own barely shifts this model.`;
+      ? `Dropping ${lever.label.toLowerCase()} to ${value}${lever.unit ? ' ' + lever.unit : ''} takes your ${lever.model} risk down by ${(Math.abs(delta) * 100).toFixed(1)} points.`
+      : delta > 0.005
+        ? `Moving ${lever.label.toLowerCase()} to ${value}${lever.unit ? ' ' + lever.unit : ''} pushes your ${lever.model} risk up by ${(delta * 100).toFixed(1)} points.`
+        : `Changing ${lever.label.toLowerCase()} on its own barely shifts this model.`;
 
   return (
     <div className="col wide">
@@ -556,15 +556,15 @@ function Counterfactual({ features, baseline, onBack }) {
 /* ============================ app ============================ */
 
 export function App() {
-  const [user, setUser]         = useState(null);
-  const [screen, setScreen]     = useState('landing');
-  const [index, setIndex]       = useState(0);
-  const [answers, setAnswers]   = useState({});
-  const [result, setResult]     = useState(null);
+  const [user, setUser] = useState(null);
+  const [screen, setScreen] = useState('landing');
+  const [index, setIndex] = useState(0);
+  const [answers, setAnswers] = useState({});
+  const [result, setResult] = useState(null);
   const [features, setFeatures] = useState(null);
-  const [error, setError]       = useState(null);
+  const [error, setError] = useState(null);
 
-  const handleLogin   = (name) => { setUser(name); setScreen('landing'); };
+  const handleLogin = (name) => { setUser(name); setScreen('landing'); };
   const handleSignOut = () => {
     setUser(null);
     setAnswers({}); setIndex(0); setResult(null); setFeatures(null); setError(null);
