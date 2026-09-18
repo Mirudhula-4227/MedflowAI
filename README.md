@@ -75,7 +75,7 @@ Step 5  PREDICT     pred  = prob >= threshold      (0.5 default)
 ### 🫀 Heart Disease Model
 | Property | Value |
 |---|---|
-| Dataset | UCI Heart Disease (1,025 rows) |
+| Dataset | Heart Disease (1,025 rows) |
 | Features | 13 (age, sex, cp, trestbps, chol, fbs, restecg, thalach, exang, oldpeak, slope, ca, thal) |
 | Architecture | `13 → 64 → 32 → 1` |
 | Activation | ReLU (hidden) · Sigmoid (output) |
@@ -87,7 +87,7 @@ Step 5  PREDICT     pred  = prob >= threshold      (0.5 default)
 ### 🧠 Stroke Prediction Model
 | Property | Value |
 |---|---|
-| Dataset | Kaggle Healthcare Stroke (5,110 rows) |
+| Dataset | Stroke Dataset (5,110 rows) |
 | Features | 15 (age, hypertension, heart_disease, glucose, BMI + encoded categoricals) |
 | Class Imbalance | 19.5 : 1 (no-stroke : stroke) → fixed with sample_weight |
 | Architecture | `15 → 64 → 32 → 1` |
